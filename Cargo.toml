@@ -4,8 +4,7 @@ version = "0.2.0"
 edition = "2024"
 description = "A smart systemd service restart tool"
 authors = ["Your Name <your.email@example.com>"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/tickle"
+repository = "https://github.com/andygeorge/tickle"
 keywords = ["systemd", "service", "restart", "cli", "system-administration"]
 categories = ["command-line-utilities"]
 
