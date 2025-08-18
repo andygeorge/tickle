@@ -1,0 +1,27 @@
+[package]
+name = "tickle"
+version = "0.1.0"
+edition = "2021"
+description = "A smart systemd service restart tool"
+authors = ["Your Name <your.email@example.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/tickle"
+keywords = ["systemd", "service", "restart", "cli", "system-administration"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "tickle"
+path = "src/main.rs"
+
+[dependencies]
+# No external dependencies needed - using only std library
+
+[dev-dependencies]
+# Add test dependencies here if needed
+
+[profile.release]
+# Optimize for size and performance
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
