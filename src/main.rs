@@ -1,7 +1,6 @@
 // src/main.rs
 use std::env;
 use std::process::{Command, exit};
-use std::io::{self, Write};
 
 #[derive(Debug)]
 enum ServiceState {
@@ -238,7 +237,8 @@ fn main() {
     // Check if running as root/with sudo
     let output = Command::new("id").arg("-u").output();
     if let Ok(output) = output {
-        let uid = String::from_utf8_lossy(&output.stdout).trim();
+        let uid_output = String::from_utf8_lossy(&output.stdout);
+        let uid = uid_output.trim();
         if uid != "0" {
             println!("⚠️  Warning: You may need to run with sudo for system services");
         }
