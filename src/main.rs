@@ -179,11 +179,16 @@ impl ServiceManager {
     }
 }
 
+fn print_version() {
+    println!("tickle {}", env!("CARGO_PKG_VERSION"));
+}
+
 fn print_usage() {
     println!("Usage: tickle [OPTIONS] <service_name>");
     println!("");
     println!("OPTIONS:");
     println!("  -s, --stop-start    Force stop/start instead of restart");
+    println!("  -v, --version       Show version information");
     println!("  -h, --help          Show this help message");
     println!("");
     println!("Examples:");
@@ -210,6 +215,10 @@ fn main() {
         match args[i].as_str() {
             "-h" | "--help" => {
                 print_usage();
+                exit(0);
+            },
+            "-v" | "--version" => {
+                print_version();
                 exit(0);
             },
             "-s" | "--stop-start" => {
