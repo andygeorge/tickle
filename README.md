@@ -14,7 +14,7 @@ A smart systemd service restart tool that intelligently chooses between `restart
 
 ### From Source
 ```bash
-git clone https://github.com/yourusername/tickle
+git clone https://github.com/andygeorge/tickle
 cd tickle
 cargo build --release
 sudo cp target/release/tickle /usr/local/bin/
@@ -22,7 +22,7 @@ sudo cp target/release/tickle /usr/local/bin/
 
 ### Using Cargo
 ```bash
-cargo install tickle
+cargo install --git https://github.com/andygeorge/tickle#0.2.0
 ```
 
 ## Usage
