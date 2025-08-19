@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  test-rust-stable:
     runs-on: ubuntu-latest
     
     steps:
@@ -16,6 +16,19 @@ jobs:
       
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
+      
+    - name: Run tests
+      run: cargo test
+
+  test-rust-nightly:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@nightly
       
     - name: Run tests
       run: cargo test
