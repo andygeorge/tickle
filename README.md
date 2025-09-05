@@ -1,14 +1,15 @@
 # Tickle 🎯
 
-A smart systemd service restart tool that intelligently chooses between `restart` and `stop`/`start` based on service capabilities.
+A smart systemd service and Docker restart tool. For systemd, it intelligently chooses between `restart` and `stop`/`start` based on service capabilities.
 
 ## Features
 
 - 🔍 **Smart Detection**: Automatically determines if a service supports restart or needs stop/start
-- 🎯 **Service State Checking**: Shows current service status before and after operations  
+- 🎯 **Service State Checking**: Shows current service status before and after operations
 - ⚡ **Fast & Reliable**: Built in Rust for performance and safety
 - 🛡️ **Error Handling**: Comprehensive error messages and status reporting
 - 🎨 **User Friendly**: Clean CLI with emoji indicators and helpful output
+- 🐳 **Docker Compose Integration**: Automatically detects and manages Docker compose stacks
 
 ## Installation
 
@@ -37,6 +38,19 @@ tickle --stop-start apache2
 tickle -s postgresql
 ```
 
+### Docker Compose Integration
+When run without arguments in a directory containing a compose file, tickle will:
+- Detect the first available compose file (docker-compose.yml, docker-compose.yaml, compose.yml, compose.yaml, container-compose.yml, container-compose.yaml)
+- Execute `docker compose down` followed by `docker compose up -d`
+
+```bash
+# In a Docker Compose project directory
+tickle                    # Will restart entire compose stack
+
+# Restart specific service in a compose file
+tickle nginx              # Will restart just the nginx service
+```
+
 ### Examples
 ```bash
 # Restart nginx (will use 'systemctl restart' if supported)
@@ -57,6 +71,13 @@ $ sudo tickle --stop-start my-oneshot-service
 ✅ Successfully stopped and started my-oneshot-service
 🎉 Tickle completed successfully!
 📊 Final state: Active
+
+# Restart entire Docker Compose stack (in compose project directory)
+$ tickle
+🐳 Compose file detected: docker-compose.yml. Performing `docker compose down`...
+🚀 Bringing stack back up in detached mode...
+✅ Compose stack restarted.
+🎉 Compose tickle completed successfully!
 ```
 
 ## How It Works
@@ -79,12 +100,14 @@ $ sudo tickle --stop-start my-oneshot-service
 
 - Linux system with systemd
 - systemctl command available
+- Docker CLI installed (for compose functionality)
 - Appropriate permissions (usually requires sudo for system services)
 
 ## Options
 
 - `-s, --stop-start`: Force stop/start strategy instead of restart
 - `-h, --help`: Show help message
+- No arguments: When run without arguments in a compose project directory, will restart entire Docker Compose stack
 
 ## Development
 
