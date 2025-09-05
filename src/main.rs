@@ -1,5 +1,7 @@
 // src/main.rs
 use std::env;
+use std::fs;
+use std::path::Path;
 use std::process::{Command, exit};
 
 #[derive(Debug)]
@@ -16,11 +18,95 @@ enum RestartStrategy {
     StopStart,
 }
 
+#[derive(Debug)]
+enum OperationMode {
+    SystemdService(String),
+    DockerCompose(String), // Path to compose file
+}
+
 struct ServiceManager;
 
 impl ServiceManager {
     fn new() -> Self {
         ServiceManager
+    }
+
+    /// Check for Docker Compose files in current directory
+    fn detect_compose_file(&self) -> Option<String> {
+        let compose_files = [
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            "compose.yml", 
+            "compose.yaml"
+        ];
+
+        for file in &compose_files {
+            if Path::new(file).exists() {
+                return Some(file.to_string());
+            }
+        }
+        None
+    }
+
+    /// Check if docker compose command is available
+    fn check_docker_compose_available(&self) -> Result<(), String> {
+        match Command::new("docker").args(&["compose", "version"]).output() {
+            Ok(output) => {
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err("docker compose is not available or not working properly.".to_string())
+                }
+            }
+            Err(_) => Err("docker compose is not available. Please install Docker with Compose plugin.".to_string()),
+        }
+    }
+
+    /// Execute Docker Compose down and up
+    fn tickle_docker_compose(&self, compose_file: &str) -> Result<(), String> {
+        self.check_docker_compose_available()?;
+
+        println!("🐳 Found Docker Compose file: {}", compose_file);
+        println!("🛑 Bringing down containers...");
+
+        // Execute docker compose down
+        let down_output = Command::new("docker")
+            .args(&["compose", "-f", compose_file, "down"])
+            .output()
+            .map_err(|e| format!("Failed to execute docker compose down: {}", e))?;
+
+        if !down_output.status.success() {
+            let stderr = String::from_utf8_lossy(&down_output.stderr);
+            return Err(format!("Docker compose down failed: {}", stderr.trim()));
+        }
+
+        println!("▶️ Starting containers in detached mode...");
+
+        // Execute docker compose up -d
+        let up_output = Command::new("docker")
+            .args(&["compose", "-f", compose_file, "up", "-d"])
+            .output()
+            .map_err(|e| format!("Failed to execute docker compose up: {}", e))?;
+
+        if up_output.status.success() {
+            println!("✅ Successfully restarted Docker Compose services");
+            
+            // Show running containers
+            println!("📋 Current container status:");
+            let ps_output = Command::new("docker")
+                .args(&["compose", "-f", compose_file, "ps"])
+                .output();
+            
+            if let Ok(output) = ps_output {
+                let ps_result = String::from_utf8_lossy(&output.stdout);
+                println!("{}", ps_result);
+            }
+            
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&up_output.stderr);
+            Err(format!("Docker compose up failed: {}", stderr.trim()))
+        }
     }
 
     /// Check if systemctl is available
@@ -156,7 +242,7 @@ impl ServiceManager {
         }
     }
 
-    /// Main tickle operation
+    /// Main tickle operation for systemd services
     fn tickle_service(&self, service_name: &str, force_stop_start: bool) -> Result<(), String> {
         self.check_systemctl_available()?;
 
@@ -177,6 +263,42 @@ impl ServiceManager {
             RestartStrategy::StopStart => self.stop_start_service(service_name),
         }
     }
+
+    /// Determine operation mode based on arguments and environment
+    fn determine_operation_mode(&self, args: &[String]) -> Result<OperationMode, String> {
+        // If no service name is provided, check for compose file
+        if args.len() < 2 || (args.len() == 2 && (args[1] == "-h" || args[1] == "--help" || args[1] == "-v" || args[1] == "--version")) {
+            if let Some(compose_file) = self.detect_compose_file() {
+                return Ok(OperationMode::DockerCompose(compose_file));
+            }
+        }
+
+        // Check if there are flags but no service name
+        let mut has_service_name = false;
+        for arg in args.iter().skip(1) {
+            if !arg.starts_with('-') {
+                has_service_name = true;
+                break;
+            }
+        }
+
+        if !has_service_name {
+            if let Some(compose_file) = self.detect_compose_file() {
+                return Ok(OperationMode::DockerCompose(compose_file));
+            } else {
+                return Err("No service name provided and no Docker Compose file found.".to_string());
+            }
+        }
+
+        // Find the service name (first non-flag argument)
+        for arg in args.iter().skip(1) {
+            if !arg.starts_with('-') {
+                return Ok(OperationMode::SystemdService(arg.clone()));
+            }
+        }
+
+        Err("No service name provided.".to_string())
+    }
 }
 
 fn print_version() {
@@ -184,35 +306,35 @@ fn print_version() {
 }
 
 fn print_usage() {
-    println!("Usage: tickle [OPTIONS] <service_name>");
+    println!("Usage: tickle [OPTIONS] [service_name]");
+    println!("");
+    println!("If no service_name is provided and a Docker Compose file is found in the current");
+    println!("directory, tickle will restart the Docker Compose services instead.");
     println!("");
     println!("OPTIONS:");
-    println!("  -s, --stop-start    Force stop/start instead of restart");
+    println!("  -s, --stop-start    Force stop/start instead of restart (systemd only)");
     println!("  -v, --version       Show version information");
     println!("  -h, --help          Show this help message");
     println!("");
     println!("Examples:");
-    println!("  tickle nginx");
-    println!("  tickle --stop-start apache2");
-    println!("  tickle -s postgresql");
+    println!("  tickle                    # Restart Docker Compose if compose file exists");
+    println!("  tickle nginx              # Restart nginx systemd service");
+    println!("  tickle --stop-start apache2   # Force stop/start apache2 service");
+    println!("  tickle -s postgresql      # Force stop/start postgresql service");
+    println!("");
+    println!("Supported Docker Compose files:");
+    println!("  - docker-compose.yml");
+    println!("  - docker-compose.yaml");
+    println!("  - compose.yml");
+    println!("  - compose.yaml");
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     
-    if args.len() < 2 {
-        eprintln!("❌ Error: No service name provided");
-        print_usage();
-        exit(1);
-    }
-
-    let mut force_stop_start = false;
-    let mut service_name = "";
-
-    // Simple argument parsing
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
+    // Handle help and version flags first
+    if args.len() > 1 {
+        match args[1].as_str() {
             "-h" | "--help" => {
                 print_usage();
                 exit(0);
@@ -221,57 +343,81 @@ fn main() {
                 print_version();
                 exit(0);
             },
-            "-s" | "--stop-start" => {
-                force_stop_start = true;
-            },
-            arg if !arg.starts_with('-') => {
-                service_name = arg;
-                break;
-            },
-            _ => {
-                eprintln!("❌ Error: Unknown option: {}", args[i]);
-                print_usage();
-                exit(1);
-            }
-        }
-        i += 1;
-    }
-
-    if service_name.is_empty() {
-        eprintln!("❌ Error: No service name provided");
-        print_usage();
-        exit(1);
-    }
-
-    // Check if running as root/with sudo
-    let output = Command::new("id").arg("-u").output();
-    if let Ok(output) = output {
-        let uid_output = String::from_utf8_lossy(&output.stdout);
-        let uid = uid_output.trim();
-        if uid != "0" {
-            println!("⚠️  Warning: You may need to run with sudo for system services");
+            _ => {}
         }
     }
 
     let service_manager = ServiceManager::new();
-    
-    match service_manager.tickle_service(service_name, force_stop_start) {
-        Ok(()) => {
-            println!("🎉 Tickle completed successfully!");
-            
-            // Verify final state
-            match service_manager.get_service_state(service_name) {
-                Ok(final_state) => {
-                    println!("📊 Final state: {:?}", final_state);
-                }
+
+    // Determine what operation to perform
+    let operation_mode = match service_manager.determine_operation_mode(&args) {
+        Ok(mode) => mode,
+        Err(e) => {
+            eprintln!("❌ Error: {}", e);
+            print_usage();
+            exit(1);
+        }
+    };
+
+    match operation_mode {
+        OperationMode::DockerCompose(compose_file) => {
+            match service_manager.tickle_docker_compose(&compose_file) {
+                Ok(()) => {
+                    println!("🎉 Docker Compose tickle completed successfully!");
+                },
                 Err(e) => {
-                    println!("⚠️  Warning: Could not verify final state: {}", e);
+                    eprintln!("❌ Error: {}", e);
+                    exit(1);
                 }
             }
         },
-        Err(e) => {
-            eprintln!("❌ Error: {}", e);
-            exit(1);
+        OperationMode::SystemdService(service_name) => {
+            let mut force_stop_start = false;
+            
+            // Parse flags for systemd service mode
+            for arg in args.iter().skip(1) {
+                match arg.as_str() {
+                    "-s" | "--stop-start" => {
+                        force_stop_start = true;
+                    },
+                    _ if arg.starts_with('-') => {
+                        eprintln!("❌ Error: Unknown option: {}", arg);
+                        print_usage();
+                        exit(1);
+                    },
+                    _ => break,
+                }
+            }
+
+            // Check if running as root/with sudo
+            let output = Command::new("id").arg("-u").output();
+            if let Ok(output) = output {
+                let uid_output = String::from_utf8_lossy(&output.stdout);
+                let uid = uid_output.trim();
+                if uid != "0" {
+                    println!("⚠️  Warning: You may need to run with sudo for system services");
+                }
+            }
+
+            match service_manager.tickle_service(&service_name, force_stop_start) {
+                Ok(()) => {
+                    println!("🎉 Tickle completed successfully!");
+                    
+                    // Verify final state
+                    match service_manager.get_service_state(&service_name) {
+                        Ok(final_state) => {
+                            println!("📊 Final state: {:?}", final_state);
+                        }
+                        Err(e) => {
+                            println!("⚠️  Warning: Could not verify final state: {}", e);
+                        }
+                    }
+                },
+                Err(e) => {
+                    eprintln!("❌ Error: {}", e);
+                    exit(1);
+                }
+            }
         }
     }
 }
