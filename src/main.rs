@@ -17,6 +17,13 @@ enum RestartStrategy {
     StopStart,
 }
 
+#[derive(Debug)]
+enum TickleCommand {
+    Tickle,
+    Start,
+    Stop,
+}
+
 struct ServiceManager;
 
 impl ServiceManager {
@@ -149,6 +156,42 @@ impl ServiceManager {
         }
     }
 
+    /// Start a systemd service
+    fn start_service(&self, service_name: &str) -> Result<(), String> {
+        println!("▶️ Starting {}...", service_name);
+
+        let output = Command::new("systemctl")
+            .args(&["start", service_name])
+            .output()
+            .map_err(|e| format!("Failed to execute start command: {}", e))?;
+        
+        if output.status.success() {
+            println!("✅ Successfully started {}", service_name);
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("Start failed: {}", stderr.trim()))
+        }
+    }
+
+    /// Stop a systemd service
+    fn stop_service(&self, service_name: &str) -> Result<(), String> {
+        println!("🛑 Stopping {}...", service_name);
+
+        let output = Command::new("systemctl")
+            .args(&["stop", service_name])
+            .output()
+            .map_err(|e| format!("Failed to execute stop command: {}", e))?;
+        
+        if output.status.success() {
+            println!("✅ Successfully stopped {}", service_name);
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("Stop failed: {}", stderr.trim()))
+        }
+    }
+
     /// Main tickle operation
     fn tickle_service(&self, service_name: &str, force_stop_start: bool) -> Result<(), String> {
         self.check_systemctl_available()?;
@@ -231,6 +274,22 @@ fn compose_down_up(compose_file: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Start compose stack
+fn compose_start(compose_file: &str) -> Result<(), String> {
+    println!("🐳 Starting compose stack: {}...", compose_file);
+    run_compose_with_best_cli(&["-f", compose_file, "up", "-d"])?;
+    println!("✅ Compose stack started.");
+    Ok(())
+}
+
+/// Stop compose stack
+fn compose_stop(compose_file: &str) -> Result<(), String> {
+    println!("🐳 Stopping compose stack: {}...", compose_file);
+    run_compose_with_best_cli(&["-f", compose_file, "down"])?;
+    println!("✅ Compose stack stopped.");
+    Ok(())
+}
+
 /* ------------------ CLI / UX ------------------ */
 
 fn print_version() {
@@ -238,56 +297,62 @@ fn print_version() {
 }
 
 fn print_usage() {
-    println!("Usage: tickle [OPTIONS] <service_name>");
+    println!("Usage: tickle [COMMAND] [OPTIONS] [service_name]");
+    println!("");
+    println!("COMMANDS:");
+    println!("  start               Start a service or compose stack");
+    println!("  stop                Stop a service or compose stack");
+    println!("  (default)           Restart/tickle a service or compose stack");
     println!("");
     println!("OPTIONS:");
-    println!("  -s, --stop-start    Force stop/start instead of restart");
+    println!("  -s, --stop-start    Force stop/start instead of restart (tickle only)");
     println!("  -v, --version       Show version information");
     println!("  -h, --help          Show this help message");
     println!("");
     println!("Behavior:");
     println!("  • If run in a directory containing a compose file (docker-compose.yml/.yaml,");
     println!("    compose.yml/.yaml, container-compose.yml/.yaml) and no <service_name> is");
-    println!("    provided, tickle will execute:");
-    println!("        docker compose -f <file> down && docker compose -f <file> up -d");
+    println!("    provided, tickle will operate on the compose stack:");
+    println!("        tickle          -> docker compose down && docker compose up -d");
+    println!("        tickle start    -> docker compose up -d");
+    println!("        tickle stop     -> docker compose down");
+    println!("");
+    println!("  • Otherwise, tickle will operate on the named systemd service:");
+    println!("        tickle nginx    -> systemctl restart nginx (or stop+start if needed)");
+    println!("        tickle start nginx -> systemctl start nginx");
+    println!("        tickle stop nginx  -> systemctl stop nginx");
     println!("");
     println!("Examples:");
     println!("  tickle nginx");
+    println!("  tickle start apache2");
+    println!("  tickle stop postgresql");
     println!("  tickle --stop-start apache2");
-    println!("  tickle -s postgresql");
+    println!("  tickle start         # in a compose project directory");
+    println!("  tickle stop          # in a compose project directory");
     println!("  tickle               # in a compose project directory");
+}
+
+/// Parse command from arguments
+fn parse_command(args: &[String]) -> TickleCommand {
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "start" => TickleCommand::Start,
+            "stop" => TickleCommand::Stop,
+            _ => TickleCommand::Tickle,
+        }
+    } else {
+        TickleCommand::Tickle
+    }
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // If no args, try compose behavior first.
-    if args.len() < 2 {
-        if let Some(compose_file) = find_compose_file() {
-            match compose_down_up(compose_file) {
-                Ok(()) => {
-                    println!("🎉 Compose tickle completed successfully!");
-                    exit(0);
-                }
-                Err(e) => {
-                    eprintln!("❌ Compose error: {}", e);
-                    exit(1);
-                }
-            }
-        } else {
-            eprintln!("❌ Error: No service name provided");
-            print_usage();
-            exit(1);
-        }
-    }
-
-    let mut force_stop_start = false;
-    let mut service_name = "";
-
-    // Simple argument parsing
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
+    let command = parse_command(&args);
+    
+    // Handle version and help for any command structure
+    for arg in &args {
+        match arg.as_str() {
             "-h" | "--help" => {
                 print_usage();
                 exit(0);
@@ -296,8 +361,29 @@ fn main() {
                 print_version();
                 exit(0);
             },
+            _ => {}
+        }
+    }
+
+    // Determine if we have a service name and parse other options
+    let mut force_stop_start = false;
+    let mut service_name = "";
+    let mut start_index = match command {
+        TickleCommand::Start | TickleCommand::Stop => 2, // Skip "tickle" and "start"/"stop"
+        TickleCommand::Tickle => 1, // Skip just "tickle"
+    };
+
+    // Parse remaining arguments
+    let mut i = start_index;
+    while i < args.len() {
+        match args[i].as_str() {
             "-s" | "--stop-start" => {
-                force_stop_start = true;
+                if matches!(command, TickleCommand::Tickle) {
+                    force_stop_start = true;
+                } else {
+                    eprintln!("❌ Error: --stop-start option only valid with tickle command");
+                    exit(1);
+                }
             },
             arg if !arg.starts_with('-') => {
                 service_name = arg;
@@ -312,14 +398,39 @@ fn main() {
         i += 1;
     }
 
+    // Handle compose file operations when no service name is provided
     if service_name.is_empty() {
-        // If we reach here with no service, we already handled compose above.
-        eprintln!("❌ Error: No service name provided");
-        print_usage();
-        exit(1);
+        if let Some(compose_file) = find_compose_file() {
+            let result = match command {
+                TickleCommand::Tickle => compose_down_up(compose_file),
+                TickleCommand::Start => compose_start(compose_file),
+                TickleCommand::Stop => compose_stop(compose_file),
+            };
+
+            match result {
+                Ok(()) => {
+                    println!("🎉 Compose {} completed successfully!", 
+                        match command {
+                            TickleCommand::Tickle => "tickle",
+                            TickleCommand::Start => "start",
+                            TickleCommand::Stop => "stop",
+                        }
+                    );
+                    exit(0);
+                }
+                Err(e) => {
+                    eprintln!("❌ Compose error: {}", e);
+                    exit(1);
+                }
+            }
+        } else {
+            eprintln!("❌ Error: No service name provided and no compose file found");
+            print_usage();
+            exit(1);
+        }
     }
 
-    // Check if running as root/with sudo
+    // Check if running as root/with sudo for systemd operations
     if let Ok(output) = Command::new("id").arg("-u").output() {
         let uid_output = String::from_utf8_lossy(&output.stdout);
         let uid = uid_output.trim();
@@ -330,17 +441,37 @@ fn main() {
 
     let service_manager = ServiceManager::new();
 
-    match service_manager.tickle_service(service_name, force_stop_start) {
-        Ok(()) => {
-            println!("🎉 Tickle completed successfully!");
+    let result = match command {
+        TickleCommand::Tickle => service_manager.tickle_service(service_name, force_stop_start),
+        TickleCommand::Start => {
+            service_manager.check_systemctl_available()
+                .and_then(|_| service_manager.start_service(service_name))
+        },
+        TickleCommand::Stop => {
+            service_manager.check_systemctl_available()
+                .and_then(|_| service_manager.stop_service(service_name))
+        },
+    };
 
-            // Verify final state
-            match service_manager.get_service_state(service_name) {
-                Ok(final_state) => {
-                    println!("📊 Final state: {:?}", final_state);
+    match result {
+        Ok(()) => {
+            println!("🎉 {} completed successfully!", 
+                match command {
+                    TickleCommand::Tickle => "Tickle",
+                    TickleCommand::Start => "Start",
+                    TickleCommand::Stop => "Stop",
                 }
-                Err(e) => {
-                    println!("⚠️  Warning: Could not verify final state: {}", e);
+            );
+
+            // Verify final state for non-tickle operations
+            if !matches!(command, TickleCommand::Tickle) {
+                match service_manager.get_service_state(service_name) {
+                    Ok(final_state) => {
+                        println!("📊 Final state: {:?}", final_state);
+                    }
+                    Err(e) => {
+                        println!("⚠️  Warning: Could not verify final state: {}", e);
+                    }
                 }
             }
         },
