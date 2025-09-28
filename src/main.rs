@@ -368,7 +368,7 @@ fn main() {
     // Determine if we have a service name and parse other options
     let mut force_stop_start = false;
     let mut service_name = "";
-    let mut start_index = match command {
+    let start_index = match command {
         TickleCommand::Start | TickleCommand::Stop => 2, // Skip "tickle" and "start"/"stop"
         TickleCommand::Tickle => 1, // Skip just "tickle"
     };
