@@ -1,6 +1,6 @@
 # Tickle 🎯
 
-A smart systemd service and Docker restart tool. For systemd, it intelligently chooses between `restart` and `stop`/`start` based on service capabilities.
+An extremely **vibe-coded** smart systemd service and Docker restart tool. For systemd, it intelligently chooses between `restart` and `stop`/`start` based on service capabilities.
 
 ## Features
 
