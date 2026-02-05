@@ -2,7 +2,11 @@
 
 ## [Documentation](./docs/)
 
-A smart systemd service and Docker restart tool. For systemd, it intelligently chooses between `restart` and `stop`/`start` based on service capabilities.
+```bash
+cargo install --git https://github.com/andygeorge/tickle#0.5.2 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
+```
+
+An almost-entirely vibe-coded smart systemd service and Docker restart tool. For systemd, it intelligently chooses between `restart` and `stop`/`start` based on service capabilities, and keeps a history of `tickle`s.
 
 ## Features
 
@@ -13,19 +17,12 @@ A smart systemd service and Docker restart tool. For systemd, it intelligently c
 - 🎨 **User Friendly**: Clean CLI with emoji indicators and helpful output
 - 🐳 **Docker Compose Integration**: Automatically detects and manages Docker compose stacks
 
-## Installation
-
-### From Source
+## Installation From Source
 ```bash
 git clone https://github.com/andygeorge/tickle
 cd tickle
 cargo build --release
 sudo cp target/release/tickle /usr/local/bin/
-```
-
-### Using Cargo
-```bash
-cargo install --git https://github.com/andygeorge/tickle#0.5.2 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
 ```
 
 ## Usage
