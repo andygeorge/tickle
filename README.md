@@ -25,7 +25,7 @@ sudo cp target/release/tickle /usr/local/bin/
 
 ### Using Cargo
 ```bash
-cargo install --git https://github.com/andygeorge/tickle#0.5.0 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
+cargo install --git https://github.com/andygeorge/tickle#0.5.2 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
 ```
 
 ## Usage
