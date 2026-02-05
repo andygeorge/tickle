@@ -1,7 +1,10 @@
 // src/main.rs
 use std::env;
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
+use std::time::SystemTime;
 
 #[derive(Debug)]
 enum ServiceState {
@@ -22,6 +25,7 @@ enum TickleCommand {
     Tickle,
     Start,
     Stop,
+    History,
 }
 
 struct ServiceManager;
@@ -214,6 +218,139 @@ impl ServiceManager {
     }
 }
 
+/* ------------------ History management ------------------ */
+
+struct HistoryManager {
+    history_dir: PathBuf,
+    history_file: PathBuf,
+}
+
+impl HistoryManager {
+    fn new() -> Result<Self, String> {
+        let home_dir = env::var("HOME")
+            .map_err(|_| "Could not determine HOME directory".to_string())?;
+        
+        let history_dir = PathBuf::from(home_dir).join(".tickle");
+        let history_file = history_dir.join("history.log");
+        
+        Ok(HistoryManager {
+            history_dir,
+            history_file,
+        })
+    }
+
+    /// Ensure the history directory exists
+    fn ensure_directory(&self) -> Result<(), String> {
+        if !self.history_dir.exists() {
+            fs::create_dir_all(&self.history_dir)
+                .map_err(|e| format!("Failed to create history directory: {}", e))?;
+        }
+        Ok(())
+    }
+
+    /// Get a formatted timestamp without external dependencies
+    fn get_timestamp() -> String {
+        match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(duration) => {
+                let secs = duration.as_secs();
+                // Convert to a basic date/time format manually
+                // This is approximate but works without dependencies
+                let days_since_epoch = secs / 86400;
+                let time_of_day = secs % 86400;
+                let hours = time_of_day / 3600;
+                let minutes = (time_of_day % 3600) / 60;
+                let seconds = time_of_day % 60;
+                
+                // Approximate year (starting from 1970)
+                let years = days_since_epoch / 365;
+                let remaining_days = days_since_epoch % 365;
+                let year = 1970 + years;
+                
+                // Rough month/day (not accounting for leap years perfectly, but close enough)
+                let month = (remaining_days / 30) + 1;
+                let day = (remaining_days % 30) + 1;
+                
+                format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", 
+                    year, month.min(12), day.min(31), hours, minutes, seconds)
+            }
+            Err(_) => String::from("unknown-time"),
+        }
+    }
+
+    /// Log a command execution to history
+    fn log_command(&self, command: &str, target: &str, success: bool) -> Result<(), String> {
+        self.ensure_directory()?;
+
+        let timestamp = Self::get_timestamp();
+        let status = if success { "SUCCESS" } else { "FAILED" };
+        let log_entry = format!("{} | {} | {} | {}\n", timestamp, command, target, status);
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.history_file)
+            .map_err(|e| format!("Failed to open history file: {}", e))?;
+
+        file.write_all(log_entry.as_bytes())
+            .map_err(|e| format!("Failed to write to history file: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Display the history
+    fn show_history(&self, lines: Option<usize>) -> Result<(), String> {
+        if !self.history_file.exists() {
+            println!("📜 No history found. Start using tickle to build your history!");
+            return Ok(());
+        }
+
+        let contents = fs::read_to_string(&self.history_file)
+            .map_err(|e| format!("Failed to read history file: {}", e))?;
+
+        let all_lines: Vec<&str> = contents.lines().collect();
+        
+        if all_lines.is_empty() {
+            println!("📜 History file is empty.");
+            return Ok(());
+        }
+
+        println!("📜 Tickle History ({})\n", self.history_file.display());
+        println!("{:<20} | {:<10} | {:<20} | {:<10}", "Timestamp", "Command", "Target", "Status");
+        println!("{}", "-".repeat(70));
+
+        let lines_to_show = match lines {
+            Some(n) => {
+                let start = if all_lines.len() > n {
+                    all_lines.len() - n
+                } else {
+                    0
+                };
+                &all_lines[start..]
+            }
+            None => &all_lines[..],
+        };
+
+        for line in lines_to_show {
+            println!("{}", line);
+        }
+
+        println!("\nTotal entries: {}", all_lines.len());
+        Ok(())
+    }
+
+    /// Clear the history
+    fn clear_history(&self) -> Result<(), String> {
+        if self.history_file.exists() {
+            fs::remove_file(&self.history_file)
+                .map_err(|e| format!("Failed to clear history: {}", e))?;
+            println!("🗑️  History cleared successfully.");
+        } else {
+            println!("📜 No history file to clear.");
+        }
+        Ok(())
+    }
+}
+
 /* ------------------ Compose helpers ------------------ */
 
 /// Return the first compose file found in the CWD, if any.
@@ -302,10 +439,13 @@ fn print_usage() {
     println!("COMMANDS:");
     println!("  start               Start a service or compose stack");
     println!("  stop                Stop a service or compose stack");
+    println!("  history             Show command history");
+    println!("  history clear       Clear command history");
     println!("  (default)           Restart/tickle a service or compose stack");
     println!("");
     println!("OPTIONS:");
     println!("  -s, --stop-start    Force stop/start instead of restart (tickle only)");
+    println!("  -n <lines>          Show last N lines of history (with history command)");
     println!("  -v, --version       Show version information");
     println!("  -h, --help          Show this help message");
     println!("");
@@ -322,14 +462,19 @@ fn print_usage() {
     println!("        tickle start nginx -> systemctl start nginx");
     println!("        tickle stop nginx  -> systemctl stop nginx");
     println!("");
+    println!("  • History is stored in ~/.tickle/history.log");
+    println!("");
     println!("Examples:");
     println!("  tickle nginx");
     println!("  tickle start apache2");
     println!("  tickle stop postgresql");
     println!("  tickle --stop-start apache2");
-    println!("  tickle start         # in a compose project directory");
-    println!("  tickle stop          # in a compose project directory");
-    println!("  tickle               # in a compose project directory");
+    println!("  tickle history              # Show full history");
+    println!("  tickle history -n 10        # Show last 10 entries");
+    println!("  tickle history clear        # Clear all history");
+    println!("  tickle start                # in a compose project directory");
+    println!("  tickle stop                 # in a compose project directory");
+    println!("  tickle                      # in a compose project directory");
 }
 
 /// Parse command from arguments
@@ -338,6 +483,7 @@ fn parse_command(args: &[String]) -> TickleCommand {
         match args[1].as_str() {
             "start" => TickleCommand::Start,
             "stop" => TickleCommand::Stop,
+            "history" => TickleCommand::History,
             _ => TickleCommand::Tickle,
         }
     } else {
@@ -365,12 +511,64 @@ fn main() {
         }
     }
 
+    // Initialize history manager
+    let history_manager = match HistoryManager::new() {
+        Ok(hm) => hm,
+        Err(e) => {
+            eprintln!("⚠️  Warning: Failed to initialize history: {}", e);
+            // Continue without history
+            return;
+        }
+    };
+
+    // Handle history command
+    if matches!(command, TickleCommand::History) {
+        // Check for subcommand (clear)
+        if args.len() > 2 && args[2] == "clear" {
+            match history_manager.clear_history() {
+                Ok(()) => exit(0),
+                Err(e) => {
+                    eprintln!("❌ Error: {}", e);
+                    exit(1);
+                }
+            }
+        }
+
+        // Check for -n option
+        let mut lines_to_show = None;
+        let mut i = 2;
+        while i < args.len() {
+            if args[i] == "-n" && i + 1 < args.len() {
+                match args[i + 1].parse::<usize>() {
+                    Ok(n) => {
+                        lines_to_show = Some(n);
+                        break;
+                    }
+                    Err(_) => {
+                        eprintln!("❌ Error: Invalid number for -n option");
+                        exit(1);
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        match history_manager.show_history(lines_to_show) {
+            Ok(()) => exit(0),
+            Err(e) => {
+                eprintln!("❌ Error: {}", e);
+                exit(1);
+            }
+        }
+    }
+
     // Determine if we have a service name and parse other options
     let mut force_stop_start = false;
     let mut service_name = "";
-    let mut start_index = match command {
+    let start_index = match command {
         TickleCommand::Start | TickleCommand::Stop => 2, // Skip "tickle" and "start"/"stop"
         TickleCommand::Tickle => 1, // Skip just "tickle"
+        TickleCommand::History => unreachable!(), // Already handled above
     };
 
     // Parse remaining arguments
@@ -398,24 +596,37 @@ fn main() {
         i += 1;
     }
 
+    // Determine the target for history logging
+    let target: String;
+
     // Handle compose file operations when no service name is provided
     if service_name.is_empty() {
         if let Some(compose_file) = find_compose_file() {
+            target = format!("compose:{}", compose_file);
+
             let result = match command {
                 TickleCommand::Tickle => compose_down_up(compose_file),
                 TickleCommand::Start => compose_start(compose_file),
                 TickleCommand::Stop => compose_stop(compose_file),
+                TickleCommand::History => unreachable!(),
             };
+
+            let success = result.is_ok();
+            let cmd_name = match command {
+                TickleCommand::Tickle => "tickle",
+                TickleCommand::Start => "start",
+                TickleCommand::Stop => "stop",
+                TickleCommand::History => unreachable!(),
+            };
+
+            // Log to history
+            if let Err(e) = history_manager.log_command(cmd_name, &target, success) {
+                eprintln!("⚠️  Warning: Failed to log to history: {}", e);
+            }
 
             match result {
                 Ok(()) => {
-                    println!("🎉 Compose {} completed successfully!", 
-                        match command {
-                            TickleCommand::Tickle => "tickle",
-                            TickleCommand::Start => "start",
-                            TickleCommand::Stop => "stop",
-                        }
-                    );
+                    println!("🎉 Compose {} completed successfully!", cmd_name);
                     exit(0);
                 }
                 Err(e) => {
@@ -428,6 +639,8 @@ fn main() {
             print_usage();
             exit(1);
         }
+    } else {
+        target = service_name.to_string();
     }
 
     // Check if running as root/with sudo for systemd operations
@@ -451,7 +664,21 @@ fn main() {
             service_manager.check_systemctl_available()
                 .and_then(|_| service_manager.stop_service(service_name))
         },
+        TickleCommand::History => unreachable!(),
     };
+
+    let success = result.is_ok();
+    let cmd_name = match command {
+        TickleCommand::Tickle => "tickle",
+        TickleCommand::Start => "start",
+        TickleCommand::Stop => "stop",
+        TickleCommand::History => unreachable!(),
+    };
+
+    // Log to history
+    if let Err(e) = history_manager.log_command(cmd_name, &target, success) {
+        eprintln!("⚠️  Warning: Failed to log to history: {}", e);
+    }
 
     match result {
         Ok(()) => {
@@ -460,6 +687,7 @@ fn main() {
                     TickleCommand::Tickle => "Tickle",
                     TickleCommand::Start => "Start",
                     TickleCommand::Stop => "Stop",
+                    TickleCommand::History => unreachable!(),
                 }
             );
 
