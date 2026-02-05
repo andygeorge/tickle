@@ -602,7 +602,13 @@ fn main() {
     // Handle compose file operations when no service name is provided
     if service_name.is_empty() {
         if let Some(compose_file) = find_compose_file() {
-            target = format!("compose:{}", compose_file);
+            // Get current directory name for better history context
+            let dir_name = env::current_dir()
+                .ok()
+                .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
+                .unwrap_or_else(|| "unknown".to_string());
+            
+            target = format!("compose:{}:{}", dir_name, compose_file);
 
             let result = match command {
                 TickleCommand::Tickle => compose_down_up(compose_file),
