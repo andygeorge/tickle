@@ -3,7 +3,7 @@
 ## [Documentation](./docs/)
 
 ```bash
-cargo install --git https://github.com/andygeorge/tickle#0.6.0 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
+cargo install --git https://github.com/andygeorge/tickle#0.6.1 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
 ```
 
 An almost-entirely vibe-coded smart systemd service and Docker restart tool. For systemd, it intelligently chooses between `restart` and `stop`/`start` based on service capabilities, and keeps a history of `tickle`s.

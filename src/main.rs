@@ -458,7 +458,10 @@ fn follow_compose_logs(compose_file: &str) -> ! {
         .args(["compose", "-f", compose_file, "logs", "-f"])
         .exec();
     // exec() only returns on failure — try legacy CLI
-    eprintln!("⚠️  docker compose not available ({}), trying docker-compose...", err);
+    eprintln!(
+        "⚠️  docker compose not available ({}), trying docker-compose...",
+        err
+    );
     let err = Command::new("docker-compose")
         .args(["-f", compose_file, "logs", "-f"])
         .exec();
