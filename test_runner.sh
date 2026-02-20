@@ -57,13 +57,18 @@ TESTS_TOTAL=$((TESTS_TOTAL + 1))
 
 # 2. Clippy (linting)
 print_section "Clippy Linting"
-if cargo clippy --all-targets --all-features -- -D warnings &> /dev/null; then
-    print_success "Clippy checks passed"
+if ! cargo clippy --version &> /dev/null; then
+    echo -e "${YELLOW}⚠ cargo-clippy not installed${NC}"
+    echo "  Install with: rustup component add clippy"
 else
-    print_failure "Clippy found issues"
-    cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tail -20
+    if cargo clippy --all-targets --all-features -- -D warnings &> /dev/null; then
+        print_success "Clippy checks passed"
+    else
+        print_failure "Clippy found issues"
+        cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tail -20
+    fi
+    TESTS_TOTAL=$((TESTS_TOTAL + 1))
 fi
-TESTS_TOTAL=$((TESTS_TOTAL + 1))
 
 # 3. Build
 print_section "Build Project"
@@ -79,7 +84,7 @@ TESTS_TOTAL=$((TESTS_TOTAL + 1))
 # 4. Unit Tests
 print_section "Unit Tests"
 echo "Running unit tests..."
-if cargo test --lib -- --test-threads=1 2>&1 | tee /tmp/tickle_unit_tests.log | grep -q "test result: ok"; then
+if cargo test --bin tickle -- --test-threads=1 2>&1 | tee /tmp/tickle_unit_tests.log | grep -q "test result: ok"; then
     UNIT_COUNT=$(grep "test result: ok" /tmp/tickle_unit_tests.log | grep -oP '\d+ passed' | grep -oP '\d+')
     print_success "Unit tests passed ($UNIT_COUNT tests)"
     TESTS_TOTAL=$((TESTS_TOTAL + UNIT_COUNT))
@@ -104,12 +109,16 @@ fi
 
 # 6. Documentation Tests
 print_section "Documentation Tests"
-if cargo test --doc 2>&1 | grep -q "test result: ok"; then
-    print_success "Documentation tests passed"
+if cargo metadata --no-deps 2>/dev/null | grep -q '"lib"'; then
+    if cargo test --doc 2>&1 | grep -q "test result: ok"; then
+        print_success "Documentation tests passed"
+    else
+        print_failure "Documentation tests failed"
+    fi
+    TESTS_TOTAL=$((TESTS_TOTAL + 1))
 else
-    print_failure "Documentation tests failed (or no doc tests found)"
+    echo -e "${YELLOW}⚠ No library target found, skipping doc tests${NC}"
 fi
-TESTS_TOTAL=$((TESTS_TOTAL + 1))
 
 # 7. Release Build
 print_section "Release Build"
