@@ -3,7 +3,7 @@
 ## [Documentation](./docs/)
 
 ```bash
-cargo install --git https://github.com/andygeorge/tickle#0.5.2 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
+cargo install --git https://github.com/andygeorge/tickle#0.6.0 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
 ```
 
 An almost-entirely vibe-coded smart systemd service and Docker restart tool. For systemd, it intelligently chooses between `restart` and `stop`/`start` based on service capabilities, and keeps a history of `tickle`s.
@@ -16,6 +16,7 @@ An almost-entirely vibe-coded smart systemd service and Docker restart tool. For
 - 🛡️ **Error Handling**: Comprehensive error messages and status reporting
 - 🎨 **User Friendly**: Clean CLI with emoji indicators and helpful output
 - 🐳 **Docker Compose Integration**: Automatically detects and manages Docker compose stacks
+- 📋 **Log Following**: Optionally tail logs after any operation with `-f`
 
 ## Installation From Source
 ```bash
@@ -35,6 +36,12 @@ tickle nginx
 # Force stop/start instead of restart
 tickle --stop-start apache2
 tickle -s postgresql
+
+# Restart a service then follow its journalctl logs
+tickle -f nginx
+
+# Restart compose stack then follow its logs
+tickle -f
 ```
 
 ### Docker Compose Integration
@@ -104,6 +111,7 @@ $ tickle
 
 ## Options
 
+- `-f, --follow`: Follow logs after the operation completes (`journalctl -f` for services, `docker compose logs -f` for compose stacks)
 - `-s, --stop-start`: Force stop/start strategy instead of restart
 - `-h, --help`: Show help message
 - No arguments: When run without arguments in a compose project directory, will restart entire Docker Compose stack

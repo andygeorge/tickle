@@ -1,6 +1,6 @@
 [package]
 name = "tickle"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2024"
 description = "A smart systemd service restart tool"
 authors = ["Your Name <your.email@example.com>"]

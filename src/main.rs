@@ -2,6 +2,7 @@
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 use std::time::SystemTime;
@@ -447,6 +448,34 @@ fn compose_stop(compose_file: &str) -> Result<(), String> {
     Ok(())
 }
 
+/* ------------------ Log following ------------------ */
+
+/// Replace the current process with `docker compose -f FILE logs -f`.
+/// Tries `docker compose` first, falls back to `docker-compose`.
+fn follow_compose_logs(compose_file: &str) -> ! {
+    println!("📋 Following compose logs (Ctrl+C to stop)...");
+    let err = Command::new("docker")
+        .args(["compose", "-f", compose_file, "logs", "-f"])
+        .exec();
+    // exec() only returns on failure — try legacy CLI
+    eprintln!("⚠️  docker compose not available ({}), trying docker-compose...", err);
+    let err = Command::new("docker-compose")
+        .args(["-f", compose_file, "logs", "-f"])
+        .exec();
+    eprintln!("❌ Failed to follow logs: {}", err);
+    exit(1);
+}
+
+/// Replace the current process with `journalctl -f -u SERVICE`.
+fn follow_service_logs(service_name: &str) -> ! {
+    println!("📋 Following logs for {} (Ctrl+C to stop)...", service_name);
+    let err = Command::new("journalctl")
+        .args(["-f", "-u", service_name])
+        .exec();
+    eprintln!("❌ Failed to follow logs: {}", err);
+    exit(1);
+}
+
 /* ------------------ CLI / UX ------------------ */
 
 fn print_version() {
@@ -464,6 +493,7 @@ fn print_usage() {
     println!("  (default)           Restart/tickle a service or compose stack");
     println!();
     println!("OPTIONS:");
+    println!("  -f, --follow        Follow logs after the operation completes");
     println!("  -s, --stop-start    Force stop/start instead of restart (tickle only)");
     println!("  -n <lines>          Show last N lines of history (with history command)");
     println!("  -v, --version       Show version information");
@@ -495,6 +525,8 @@ fn print_usage() {
     println!("  tickle start                # in a compose project directory");
     println!("  tickle stop                 # in a compose project directory");
     println!("  tickle                      # in a compose project directory");
+    println!("  tickle -f nginx             # restart nginx then follow journalctl");
+    println!("  tickle -f                   # restart compose stack then follow logs");
 }
 
 /// Parse command from arguments
@@ -584,6 +616,7 @@ fn main() {
 
     // Determine if we have a service name and parse other options
     let mut force_stop_start = false;
+    let mut follow = false;
     let mut service_name = "";
     let start_index = match command {
         TickleCommand::Start | TickleCommand::Stop => 2, // Skip "tickle" and "start"/"stop"
@@ -595,6 +628,9 @@ fn main() {
     let mut i = start_index;
     while i < args.len() {
         match args[i].as_str() {
+            "-f" | "--follow" => {
+                follow = true;
+            }
             "-s" | "--stop-start" => {
                 if matches!(command, TickleCommand::Tickle) {
                     force_stop_start = true;
@@ -656,6 +692,9 @@ fn main() {
             match result {
                 Ok(()) => {
                     println!("🎉 Compose {} completed successfully!", cmd_name);
+                    if follow {
+                        follow_compose_logs(compose_file);
+                    }
                     exit(0);
                 }
                 Err(e) => {
@@ -729,6 +768,10 @@ fn main() {
                         println!("⚠️  Warning: Could not verify final state: {}", e);
                     }
                 }
+            }
+
+            if follow {
+                follow_service_logs(service_name);
             }
         }
         Err(e) => {
