@@ -49,7 +49,9 @@ impl ServiceManager {
             .args(&["is-active", service_name])
             .output()
             .map_err(|e| format!("Failed to check service status: {}", e))?;
-        let status = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+        let status = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_lowercase();
 
         match status.as_str() {
             "active" => Ok(ServiceState::Active),
@@ -168,7 +170,7 @@ impl ServiceManager {
             .args(&["start", service_name])
             .output()
             .map_err(|e| format!("Failed to execute start command: {}", e))?;
-        
+
         if output.status.success() {
             println!("✅ Successfully started {}", service_name);
             Ok(())
@@ -186,7 +188,7 @@ impl ServiceManager {
             .args(&["stop", service_name])
             .output()
             .map_err(|e| format!("Failed to execute stop command: {}", e))?;
-        
+
         if output.status.success() {
             println!("✅ Successfully stopped {}", service_name);
             Ok(())
@@ -227,12 +229,12 @@ struct HistoryManager {
 
 impl HistoryManager {
     fn new() -> Result<Self, String> {
-        let home_dir = env::var("HOME")
-            .map_err(|_| "Could not determine HOME directory".to_string())?;
-        
+        let home_dir =
+            env::var("HOME").map_err(|_| "Could not determine HOME directory".to_string())?;
+
         let history_dir = PathBuf::from(home_dir).join(".tickle");
         let history_file = history_dir.join("history.log");
-        
+
         Ok(HistoryManager {
             history_dir,
             history_file,
@@ -260,18 +262,25 @@ impl HistoryManager {
                 let hours = time_of_day / 3600;
                 let minutes = (time_of_day % 3600) / 60;
                 let seconds = time_of_day % 60;
-                
+
                 // Approximate year (starting from 1970)
                 let years = days_since_epoch / 365;
                 let remaining_days = days_since_epoch % 365;
                 let year = 1970 + years;
-                
+
                 // Rough month/day (not accounting for leap years perfectly, but close enough)
                 let month = (remaining_days / 30) + 1;
                 let day = (remaining_days % 30) + 1;
-                
-                format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", 
-                    year, month.min(12), day.min(31), hours, minutes, seconds)
+
+                format!(
+                    "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    year,
+                    month.min(12),
+                    day.min(31),
+                    hours,
+                    minutes,
+                    seconds
+                )
             }
             Err(_) => String::from("unknown-time"),
         }
@@ -308,14 +317,17 @@ impl HistoryManager {
             .map_err(|e| format!("Failed to read history file: {}", e))?;
 
         let all_lines: Vec<&str> = contents.lines().collect();
-        
+
         if all_lines.is_empty() {
             println!("📜 History file is empty.");
             return Ok(());
         }
 
         println!("📜 Tickle History ({})\n", self.history_file.display());
-        println!("{:<20} | {:<10} | {:<20} | {:<10}", "Timestamp", "Command", "Target", "Status");
+        println!(
+            "{:<20} | {:<10} | {:<20} | {:<10}",
+            "Timestamp", "Command", "Target", "Status"
+        );
         println!("{}", "-".repeat(70));
 
         let lines_to_show = match lines {
@@ -375,7 +387,9 @@ fn find_compose_file() -> Option<&'static str> {
 /// Try running `docker compose <args...>` first; fall back to `docker-compose <args...>`.
 fn run_compose_with_best_cli(args: &[&str]) -> Result<(), String> {
     // Prefer modern `docker compose`
-    let try_docker_compose_plugin = Command::new("docker").args(std::iter::once("compose").chain(args.iter().copied())).output();
+    let try_docker_compose_plugin = Command::new("docker")
+        .args(std::iter::once("compose").chain(args.iter().copied()))
+        .output();
     if let Ok(out) = try_docker_compose_plugin {
         if out.status.success() {
             return Ok(());
@@ -392,18 +406,26 @@ fn run_compose_with_best_cli(args: &[&str]) -> Result<(), String> {
     }
 
     // Legacy `docker-compose`
-    let legacy = Command::new("docker-compose").args(args).output()
+    let legacy = Command::new("docker-compose")
+        .args(args)
+        .output()
         .map_err(|e| format!("Failed to run docker-compose: {}", e))?;
     if legacy.status.success() {
         Ok(())
     } else {
-        Err(format!("Compose command failed: {}", String::from_utf8_lossy(&legacy.stderr).trim()))
+        Err(format!(
+            "Compose command failed: {}",
+            String::from_utf8_lossy(&legacy.stderr).trim()
+        ))
     }
 }
 
 /// Perform `compose down` then `compose up -d` against the given compose file.
 fn compose_down_up(compose_file: &str) -> Result<(), String> {
-    println!("🐳 Compose file detected: {}. Performing `docker compose down`...", compose_file);
+    println!(
+        "🐳 Compose file detected: {}. Performing `docker compose down`...",
+        compose_file
+    );
     run_compose_with_best_cli(&["-f", compose_file, "down"])?;
     println!("🚀 Bringing stack back up in detached mode...");
     run_compose_with_best_cli(&["-f", compose_file, "up", "-d"])?;
@@ -495,18 +517,18 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     let command = parse_command(&args);
-    
+
     // Handle version and help for any command structure
     for arg in &args {
         match arg.as_str() {
             "-h" | "--help" => {
                 print_usage();
                 exit(0);
-            },
+            }
             "-v" | "--version" => {
                 print_version();
                 exit(0);
-            },
+            }
             _ => {}
         }
     }
@@ -567,8 +589,8 @@ fn main() {
     let mut service_name = "";
     let start_index = match command {
         TickleCommand::Start | TickleCommand::Stop => 2, // Skip "tickle" and "start"/"stop"
-        TickleCommand::Tickle => 1, // Skip just "tickle"
-        TickleCommand::History => unreachable!(), // Already handled above
+        TickleCommand::Tickle => 1,                      // Skip just "tickle"
+        TickleCommand::History => unreachable!(),        // Already handled above
     };
 
     // Parse remaining arguments
@@ -582,11 +604,11 @@ fn main() {
                     eprintln!("❌ Error: --stop-start option only valid with tickle command");
                     exit(1);
                 }
-            },
+            }
             arg if !arg.starts_with('-') => {
                 service_name = arg;
                 break;
-            },
+            }
             _ => {
                 eprintln!("❌ Error: Unknown option: {}", args[i]);
                 print_usage();
@@ -605,9 +627,12 @@ fn main() {
             // Get current directory name for better history context
             let dir_name = env::current_dir()
                 .ok()
-                .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
+                .and_then(|path| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                })
                 .unwrap_or_else(|| "unknown".to_string());
-            
+
             target = format!("compose:{}:{}", dir_name, compose_file);
 
             let result = match command {
@@ -662,14 +687,12 @@ fn main() {
 
     let result = match command {
         TickleCommand::Tickle => service_manager.tickle_service(service_name, force_stop_start),
-        TickleCommand::Start => {
-            service_manager.check_systemctl_available()
-                .and_then(|_| service_manager.start_service(service_name))
-        },
-        TickleCommand::Stop => {
-            service_manager.check_systemctl_available()
-                .and_then(|_| service_manager.stop_service(service_name))
-        },
+        TickleCommand::Start => service_manager
+            .check_systemctl_available()
+            .and_then(|_| service_manager.start_service(service_name)),
+        TickleCommand::Stop => service_manager
+            .check_systemctl_available()
+            .and_then(|_| service_manager.stop_service(service_name)),
         TickleCommand::History => unreachable!(),
     };
 
@@ -688,7 +711,8 @@ fn main() {
 
     match result {
         Ok(()) => {
-            println!("🎉 {} completed successfully!", 
+            println!(
+                "🎉 {} completed successfully!",
                 match command {
                     TickleCommand::Tickle => "Tickle",
                     TickleCommand::Start => "Start",
@@ -708,7 +732,7 @@ fn main() {
                     }
                 }
             }
-        },
+        }
         Err(e) => {
             eprintln!("❌ Error: {}", e);
             exit(1);
