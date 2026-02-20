@@ -56,26 +56,22 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
-    
+      uses: actions/checkout@v4
+
     - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: stable
-        override: true
-    
+      uses: dtolnay/rust-toolchain@stable
+
     - name: Install tarpaulin
       run: cargo install cargo-tarpaulin
-    
+
     - name: Generate coverage
       run: cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out Xml
-    
+
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         files: ./cobertura.xml
         fail_ci_if_error: false
@@ -83,27 +79,23 @@ jobs:
   build-release:
     name: Build Release
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
-    
+      uses: actions/checkout@v4
+
     - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: stable
-        override: true
-    
+      uses: dtolnay/rust-toolchain@stable
+
     - name: Build release
       run: cargo build --release --verbose
-    
+
     - name: Run smoke tests
       run: |
         ./target/release/tickle --version
         ./target/release/tickle --help
         HOME=/tmp/test_home ./target/release/tickle history
-    
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
@@ -113,46 +105,35 @@ jobs:
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
-    
+      uses: actions/checkout@v4
+
     - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: stable
-        override: true
-    
+      uses: dtolnay/rust-toolchain@stable
+
     - name: Install cargo-audit
       run: cargo install cargo-audit
-    
+
     - name: Run security audit
       run: cargo audit
 
   lint:
     name: Additional Linting
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
-    
-    - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: stable
-        override: true
-    
+      uses: actions/checkout@v4
+
     - name: Check for TODO/FIXME comments
       run: |
         if grep -r "TODO\|FIXME" src/ tests/ 2>/dev/null; then
           echo "Warning: TODO/FIXME comments found"
           exit 0
         fi
-    
+
     - name: Check file sizes
       run: |
         echo "Checking for large files..."
@@ -164,22 +145,20 @@ jobs:
     strategy:
       matrix:
         rust: [stable, beta, nightly]
-    
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
-    
+      uses: actions/checkout@v4
+
     - name: Install Rust ${{ matrix.rust }}
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@master
       with:
-        profile: minimal
         toolchain: ${{ matrix.rust }}
-        override: true
-    
+
     - name: Build
       run: cargo build --verbose
       continue-on-error: ${{ matrix.rust == 'nightly' }}
-    
+
     - name: Run tests
       run: cargo test --verbose
       continue-on-error: ${{ matrix.rust == 'nightly' }}
