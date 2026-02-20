@@ -376,7 +376,10 @@ fn find_compose_file() -> Option<&'static str> {
         "container-compose.yml",
         "container-compose.yaml",
     ];
-    candidates.into_iter().find(|&name| Path::new(name).exists()).map(|v| v as _)
+    candidates
+        .into_iter()
+        .find(|&name| Path::new(name).exists())
+        .map(|v| v as _)
 }
 
 /// Try running `docker compose <args...>` first; fall back to `docker-compose <args...>`.
