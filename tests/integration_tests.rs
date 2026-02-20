@@ -228,7 +228,7 @@ fn test_tickle_history_with_n_option() {
     let test_dir = create_temp_dir("history_n_option");
 
     let output = Command::new(get_tickle_binary())
-        .args(&["history", "-n", "5"])
+        .args(["history", "-n", "5"])
         .env("HOME", &test_dir)
         .output()
         .expect("Failed to execute tickle");
@@ -243,7 +243,7 @@ fn test_tickle_history_invalid_n_value() {
     let test_dir = create_temp_dir("history_invalid_n");
 
     let output = Command::new(get_tickle_binary())
-        .args(&["history", "-n", "not-a-number"])
+        .args(["history", "-n", "not-a-number"])
         .env("HOME", &test_dir)
         .output()
         .expect("Failed to execute tickle");
@@ -260,7 +260,7 @@ fn test_tickle_stop_start_flag_with_wrong_command() {
     let test_dir = create_temp_dir("stop_start_flag");
 
     let output = Command::new(get_tickle_binary())
-        .args(&["start", "--stop-start", "nginx"])
+        .args(["start", "--stop-start", "nginx"])
         .current_dir(&test_dir)
         .output()
         .expect("Failed to execute tickle");
@@ -337,7 +337,7 @@ fn test_help_contains_all_commands() {
 fn test_multiple_help_flags() {
     // Should work with multiple help flags
     let output = Command::new(get_tickle_binary())
-        .args(&["-h", "-h"])
+        .args(["-h", "-h"])
         .output()
         .expect("Failed to execute tickle");
 

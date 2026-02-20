@@ -46,7 +46,7 @@ impl ServiceManager {
     /// Get the current state of a service
     fn get_service_state(&self, service_name: &str) -> Result<ServiceState, String> {
         let output = Command::new("systemctl")
-            .args(&["is-active", service_name])
+            .args(["is-active", service_name])
             .output()
             .map_err(|e| format!("Failed to check service status: {}", e))?;
         let status = String::from_utf8_lossy(&output.stdout)
@@ -65,7 +65,7 @@ impl ServiceManager {
     fn can_restart_service(&self, service_name: &str) -> Result<bool, String> {
         // First check if the service unit exists
         let output = Command::new("systemctl")
-            .args(&["cat", service_name])
+            .args(["cat", service_name])
             .output()
             .map_err(|e| format!("Failed to check if service exists: {}", e))?;
         if !output.status.success() {
@@ -74,7 +74,7 @@ impl ServiceManager {
 
         // Check if restart is supported by looking at the service configuration
         let output = Command::new("systemctl")
-            .args(&["show", service_name, "--property=CanRestart"])
+            .args(["show", service_name, "--property=CanRestart"])
             .output()
             .map_err(|e| format!("Failed to check restart capability: {}", e))?;
         if output.status.success() {
@@ -86,7 +86,7 @@ impl ServiceManager {
 
         // Fallback: try to determine if we can restart based on service type
         let output = Command::new("systemctl")
-            .args(&["show", service_name, "--property=Type"])
+            .args(["show", service_name, "--property=Type"])
             .output()
             .map_err(|e| format!("Failed to check service type: {}", e))?;
         if output.status.success() {
@@ -95,7 +95,7 @@ impl ServiceManager {
             if result.contains("Type=oneshot") {
                 // Check if RemainAfterExit is set
                 let remain_output = Command::new("systemctl")
-                    .args(&["show", service_name, "--property=RemainAfterExit"])
+                    .args(["show", service_name, "--property=RemainAfterExit"])
                     .output()
                     .map_err(|e| format!("Failed to check RemainAfterExit: {}", e))?;
 
@@ -123,7 +123,7 @@ impl ServiceManager {
         println!("🔄 Attempting to restart {}...", service_name);
 
         let output = Command::new("systemctl")
-            .args(&["restart", service_name])
+            .args(["restart", service_name])
             .output()
             .map_err(|e| format!("Failed to execute restart command: {}", e))?;
         if output.status.success() {
@@ -140,7 +140,7 @@ impl ServiceManager {
         println!("🛑 Stopping {}...", service_name);
 
         let stop_output = Command::new("systemctl")
-            .args(&["stop", service_name])
+            .args(["stop", service_name])
             .output()
             .map_err(|e| format!("Failed to execute stop command: {}", e))?;
         if !stop_output.status.success() {
@@ -150,7 +150,7 @@ impl ServiceManager {
         println!("▶️ Starting {}...", service_name);
 
         let start_output = Command::new("systemctl")
-            .args(&["start", service_name])
+            .args(["start", service_name])
             .output()
             .map_err(|e| format!("Failed to execute start command: {}", e))?;
         if start_output.status.success() {
@@ -167,7 +167,7 @@ impl ServiceManager {
         println!("▶️ Starting {}...", service_name);
 
         let output = Command::new("systemctl")
-            .args(&["start", service_name])
+            .args(["start", service_name])
             .output()
             .map_err(|e| format!("Failed to execute start command: {}", e))?;
 
@@ -185,7 +185,7 @@ impl ServiceManager {
         println!("🛑 Stopping {}...", service_name);
 
         let output = Command::new("systemctl")
-            .args(&["stop", service_name])
+            .args(["stop", service_name])
             .output()
             .map_err(|e| format!("Failed to execute stop command: {}", e))?;
 
@@ -376,12 +376,7 @@ fn find_compose_file() -> Option<&'static str> {
         "container-compose.yml",
         "container-compose.yaml",
     ];
-    for name in candidates {
-        if Path::new(name).exists() {
-            return Some(name);
-        }
-    }
-    None
+    candidates.into_iter().find(|&name| Path::new(name).exists()).map(|v| v as _)
 }
 
 /// Try running `docker compose <args...>` first; fall back to `docker-compose <args...>`.
@@ -457,20 +452,20 @@ fn print_version() {
 
 fn print_usage() {
     println!("Usage: tickle [COMMAND] [OPTIONS] [service_name]");
-    println!("");
+    println!();
     println!("COMMANDS:");
     println!("  start               Start a service or compose stack");
     println!("  stop                Stop a service or compose stack");
     println!("  history             Show command history");
     println!("  history clear       Clear command history");
     println!("  (default)           Restart/tickle a service or compose stack");
-    println!("");
+    println!();
     println!("OPTIONS:");
     println!("  -s, --stop-start    Force stop/start instead of restart (tickle only)");
     println!("  -n <lines>          Show last N lines of history (with history command)");
     println!("  -v, --version       Show version information");
     println!("  -h, --help          Show this help message");
-    println!("");
+    println!();
     println!("Behavior:");
     println!("  • If run in a directory containing a compose file (docker-compose.yml/.yaml,");
     println!("    compose.yml/.yaml, container-compose.yml/.yaml) and no <service_name> is");
@@ -478,14 +473,14 @@ fn print_usage() {
     println!("        tickle          -> docker compose down && docker compose up -d");
     println!("        tickle start    -> docker compose up -d");
     println!("        tickle stop     -> docker compose down");
-    println!("");
+    println!();
     println!("  • Otherwise, tickle will operate on the named systemd service:");
     println!("        tickle nginx    -> systemctl restart nginx (or stop+start if needed)");
     println!("        tickle start nginx -> systemctl start nginx");
     println!("        tickle stop nginx  -> systemctl stop nginx");
-    println!("");
+    println!();
     println!("  • History is stored in ~/.tickle/history.log");
-    println!("");
+    println!();
     println!("Examples:");
     println!("  tickle nginx");
     println!("  tickle start apache2");
