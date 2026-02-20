@@ -240,5 +240,3 @@ RUST_LOG=debug cargo run -- nginx
 # Build optimized release
 cargo build --release
 ```
-
-.
