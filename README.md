@@ -12,6 +12,7 @@ An almost-entirely vibe-coded smart systemd service and Docker restart tool. For
 
 - 🔍 **Smart Detection**: Automatically determines if a service supports restart or needs stop/start
 - 🎯 **Service State Checking**: Shows current service status before and after operations
+- 🗂️ **Stack Tickling**: Restart, start, or stop multiple systemd services in one command
 - ⚡ **Fast & Reliable**: Built in Rust for performance and safety
 - 🛡️ **Error Handling**: Comprehensive error messages and status reporting
 - 🎨 **User Friendly**: Clean CLI with emoji indicators and helpful output
@@ -32,6 +33,13 @@ sudo cp target/release/tickle /usr/local/bin/
 ```bash
 # Restart a service (smart detection)
 tickle nginx
+
+# Restart multiple services in sequence (stack tickle)
+tickle nginx postgresql redis
+
+# Start or stop multiple services
+tickle start nginx postgresql
+tickle stop nginx postgresql redis
 
 # Force stop/start instead of restart
 tickle --stop-start apache2
@@ -78,6 +86,35 @@ $ sudo tickle --stop-start my-oneshot-service
 🎉 Tickle completed successfully!
 📊 Final state: Active
 
+# Restart multiple services in sequence (stack tickle)
+$ sudo tickle nginx postgresql redis
+
+--- tickle nginx ---
+📊 Current state of nginx: Active
+🎯 Using strategy: Restart
+🔄 Attempting to restart nginx...
+✅ Successfully restarted nginx
+
+--- tickle postgresql ---
+📊 Current state of postgresql: Active
+🎯 Using strategy: Restart
+🔄 Attempting to restart postgresql...
+✅ Successfully restarted postgresql
+
+--- tickle redis ---
+📊 Current state of redis: Active
+🎯 Using strategy: Restart
+🔄 Attempting to restart redis...
+✅ Successfully restarted redis
+
+📋 Summary (3 services):
+────────────────────────────────────────
+  ✅ nginx
+  ✅ postgresql
+  ✅ redis
+────────────────────────────────────────
+🎉 All 3 services tickled successfully!
+
 # Restart entire Docker Compose stack (in compose project directory)
 $ tickle
 🐳 Compose file detected: docker-compose.yml. Performing `docker compose down`...
@@ -115,6 +152,21 @@ $ tickle
 - `-s, --stop-start`: Force stop/start strategy instead of restart
 - `-h, --help`: Show help message
 - No arguments: When run without arguments in a compose project directory, will restart entire Docker Compose stack
+
+## Multi-Service (Stack Tickling)
+
+Pass multiple service names to operate on all of them in sequence:
+
+```bash
+tickle nginx postgresql redis
+tickle start nginx postgresql
+tickle stop nginx postgresql redis
+```
+
+- Each service is processed in order and logged to history as a separate entry
+- A summary table is printed at the end showing per-service success/failure
+- Exit code is non-zero if **any** service failed
+- Single-service behavior is unchanged
 
 ## Shell Completions
 

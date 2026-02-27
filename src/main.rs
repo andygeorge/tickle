@@ -630,18 +630,18 @@ fn print_version() {
 }
 
 fn print_usage() {
-    println!("Usage: tickle [COMMAND] [OPTIONS] [service_name]");
+    println!("Usage: tickle [COMMAND] [OPTIONS] [service_name ...]");
     println!();
     println!("COMMANDS:");
-    println!("  start               Start a service or compose stack");
-    println!("  stop                Stop a service or compose stack");
+    println!("  start               Start one or more services or a compose stack");
+    println!("  stop                Stop one or more services or a compose stack");
     println!("  history             Show command history");
     println!("  history clear       Clear command history");
     println!("  history stats       Show history statistics");
     println!("  completions bash    Print bash completion script");
     println!("  completions zsh     Print zsh completion script");
     println!("  completions fish    Print fish completion script");
-    println!("  (default)           Restart/tickle a service or compose stack");
+    println!("  (default)           Restart/tickle one or more services or a compose stack");
     println!();
     println!("OPTIONS:");
     println!("  -f, --follow        Follow logs after the operation completes");
@@ -658,10 +658,14 @@ fn print_usage() {
     println!("        tickle start    -> docker compose up -d");
     println!("        tickle stop     -> docker compose down");
     println!();
-    println!("  • Otherwise, tickle will operate on the named systemd service:");
-    println!("        tickle nginx    -> systemctl restart nginx (or stop+start if needed)");
-    println!("        tickle start nginx -> systemctl start nginx");
-    println!("        tickle stop nginx  -> systemctl stop nginx");
+    println!("  • Otherwise, tickle will operate on the named systemd service(s):");
+    println!("        tickle nginx             -> restart nginx");
+    println!("        tickle start nginx       -> start nginx");
+    println!("        tickle stop nginx        -> stop nginx");
+    println!("        tickle nginx postgresql  -> restart both in sequence, then summarize");
+    println!();
+    println!("  • When multiple services are given, each is logged separately in history.");
+    println!("    A summary is printed at the end; exit code is non-zero if any failed.");
     println!();
     println!("  • History is stored in ~/.tickle/history.log");
     println!();
@@ -672,6 +676,9 @@ fn print_usage() {
     println!();
     println!("Examples:");
     println!("  tickle nginx");
+    println!("  tickle nginx postgresql redis    # stack tickle — restart all three");
+    println!("  tickle start nginx postgresql    # start both services");
+    println!("  tickle stop nginx postgresql     # stop both services");
     println!("  tickle start apache2");
     println!("  tickle stop postgresql");
     println!("  tickle --stop-start apache2");
@@ -1044,17 +1051,17 @@ fn main() {
         }
     }
 
-    // Determine if we have a service name and parse other options
+    // Determine if we have service names and parse other options
     let mut force_stop_start = false;
     let mut follow = false;
-    let mut service_name = "";
+    let mut service_names: Vec<String> = Vec::new();
     let start_index = match command {
         TickleCommand::Start | TickleCommand::Stop => 2, // Skip "tickle" and "start"/"stop"
         TickleCommand::Tickle => 1,                      // Skip just "tickle"
         TickleCommand::History | TickleCommand::Completions => unreachable!(), // Already handled above
     };
 
-    // Parse remaining arguments
+    // Parse remaining arguments — collect all non-flag tokens as service names
     let mut i = start_index;
     while i < args.len() {
         match args[i].as_str() {
@@ -1070,8 +1077,7 @@ fn main() {
                 }
             }
             arg if !arg.starts_with('-') => {
-                service_name = arg;
-                break;
+                service_names.push(arg.to_string());
             }
             _ => {
                 eprintln!("❌ Error: Unknown option: {}", args[i]);
@@ -1082,11 +1088,8 @@ fn main() {
         i += 1;
     }
 
-    // Determine the target for history logging
-    let target: String;
-
-    // Handle compose file operations when no service name is provided
-    if service_name.is_empty() {
+    // Handle compose file operations when no service names are provided
+    if service_names.is_empty() {
         if let Some(compose_file) = find_compose_file() {
             // Get current directory name for better history context
             let dir_name = env::current_dir()
@@ -1097,7 +1100,7 @@ fn main() {
                 })
                 .unwrap_or_else(|| "unknown".to_string());
 
-            target = format!("compose:{}:{}", dir_name, compose_file);
+            let target = format!("compose:{}:{}", dir_name, compose_file);
 
             let result = match command {
                 TickleCommand::Tickle => compose_down_up(compose_file),
@@ -1137,8 +1140,6 @@ fn main() {
             print_usage();
             exit(1);
         }
-    } else {
-        target = service_name.to_string();
     }
 
     // Check if running as root/with sudo for systemd operations
@@ -1152,18 +1153,6 @@ fn main() {
 
     let service_manager = ServiceManager::new();
 
-    let result = match command {
-        TickleCommand::Tickle => service_manager.tickle_service(service_name, force_stop_start),
-        TickleCommand::Start => service_manager
-            .check_systemctl_available()
-            .and_then(|_| service_manager.start_service(service_name)),
-        TickleCommand::Stop => service_manager
-            .check_systemctl_available()
-            .and_then(|_| service_manager.stop_service(service_name)),
-        TickleCommand::History | TickleCommand::Completions => unreachable!(),
-    };
-
-    let success = result.is_ok();
     let cmd_name = match command {
         TickleCommand::Tickle => "tickle",
         TickleCommand::Start => "start",
@@ -1171,42 +1160,113 @@ fn main() {
         TickleCommand::History | TickleCommand::Completions => unreachable!(),
     };
 
-    // Log to history
-    if let Err(e) = history_manager.log_command(cmd_name, &target, success) {
-        eprintln!("⚠️  Warning: Failed to log to history: {}", e);
-    }
+    if service_names.len() == 1 {
+        // Single service — identical behavior to today
+        let service_name = &service_names[0];
 
-    match result {
-        Ok(()) => {
-            println!(
-                "🎉 {} completed successfully!",
-                match command {
-                    TickleCommand::Tickle => "Tickle",
-                    TickleCommand::Start => "Start",
-                    TickleCommand::Stop => "Stop",
-                    TickleCommand::History | TickleCommand::Completions => unreachable!(),
+        let result = match command {
+            TickleCommand::Tickle => service_manager.tickle_service(service_name, force_stop_start),
+            TickleCommand::Start => service_manager
+                .check_systemctl_available()
+                .and_then(|_| service_manager.start_service(service_name)),
+            TickleCommand::Stop => service_manager
+                .check_systemctl_available()
+                .and_then(|_| service_manager.stop_service(service_name)),
+            TickleCommand::History | TickleCommand::Completions => unreachable!(),
+        };
+
+        let success = result.is_ok();
+
+        // Log to history
+        if let Err(e) = history_manager.log_command(cmd_name, service_name, success) {
+            eprintln!("⚠️  Warning: Failed to log to history: {}", e);
+        }
+
+        match result {
+            Ok(()) => {
+                println!(
+                    "🎉 {} completed successfully!",
+                    match command {
+                        TickleCommand::Tickle => "Tickle",
+                        TickleCommand::Start => "Start",
+                        TickleCommand::Stop => "Stop",
+                        TickleCommand::History | TickleCommand::Completions => unreachable!(),
+                    }
+                );
+
+                // Verify final state for non-tickle operations
+                if !matches!(command, TickleCommand::Tickle) {
+                    match service_manager.get_service_state(service_name) {
+                        Ok(final_state) => {
+                            println!("📊 Final state: {:?}", final_state);
+                        }
+                        Err(e) => {
+                            println!("⚠️  Warning: Could not verify final state: {}", e);
+                        }
+                    }
                 }
-            );
 
-            // Verify final state for non-tickle operations
-            if !matches!(command, TickleCommand::Tickle) {
-                match service_manager.get_service_state(service_name) {
-                    Ok(final_state) => {
-                        println!("📊 Final state: {:?}", final_state);
-                    }
-                    Err(e) => {
-                        println!("⚠️  Warning: Could not verify final state: {}", e);
-                    }
+                if follow {
+                    follow_service_logs(service_name);
                 }
             }
-
-            if follow {
-                follow_service_logs(service_name);
+            Err(e) => {
+                eprintln!("❌ Error: {}", e);
+                exit(1);
             }
         }
-        Err(e) => {
+    } else {
+        // Multiple services — stack tickle: operate in sequence, log each, then summarize
+        if let Err(e) = service_manager.check_systemctl_available() {
             eprintln!("❌ Error: {}", e);
             exit(1);
+        }
+
+        let mut results: Vec<(String, Result<(), String>)> = Vec::new();
+
+        for service_name in &service_names {
+            println!("\n--- {} {} ---", cmd_name, service_name);
+            let result = match command {
+                TickleCommand::Tickle => {
+                    service_manager.tickle_service(service_name, force_stop_start)
+                }
+                TickleCommand::Start => service_manager.start_service(service_name),
+                TickleCommand::Stop => service_manager.stop_service(service_name),
+                TickleCommand::History | TickleCommand::Completions => unreachable!(),
+            };
+            let success = result.is_ok();
+            if let Err(e) = history_manager.log_command(cmd_name, service_name, success) {
+                eprintln!("⚠️  Warning: Failed to log to history: {}", e);
+            }
+            if let Err(ref e) = result {
+                eprintln!("❌ {}: {}", service_name, e);
+            }
+            results.push((service_name.clone(), result));
+        }
+
+        // Print summary
+        let total = results.len();
+        let failed_count = results.iter().filter(|(_, r)| r.is_err()).count();
+        let ok_count = total - failed_count;
+
+        println!("\n📋 Summary ({} services):", total);
+        println!("{}", "─".repeat(40));
+        for (svc, res) in &results {
+            match res {
+                Ok(()) => println!("  ✅ {}", svc),
+                Err(e) => println!("  ❌ {} — {}", svc, e),
+            }
+        }
+        println!("{}", "─".repeat(40));
+
+        if failed_count > 0 {
+            eprintln!("❌ {} succeeded, {} failed", ok_count, failed_count);
+            exit(1);
+        } else {
+            println!("🎉 All {} services {}ed successfully!", total, cmd_name);
+            if follow {
+                follow_service_logs(service_names.last().unwrap());
+            }
         }
     }
 }
