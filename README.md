@@ -188,6 +188,46 @@ tickle history -n 25
 tickle history clear
 ```
 
+#### History Statistics
+```bash
+tickle history stats
+```
+
+Example output:
+```
+📊 Tickle History Statistics
+==================================================
+
+📈 Overview
+  Total operations:  42
+  Successes:         38  (90%)
+  Failures:          4  (9%)
+
+🎯 Command Breakdown
+  tickle:  25
+  start:   12
+  stop:    5
+
+🏆 Most-Tickled Services (Top 5)
+  1. nginx (15)
+  2. postgresql (8)
+  3. compose:myproject:docker-compose.yml (7)
+  4. redis (5)
+  5. apache2 (3)
+
+📅 Recent Activity (Last 7 Days)
+  2026-02-21 (6 days ago): 2
+  2026-02-22 (5 days ago): 0
+  2026-02-23 (4 days ago): 5
+  2026-02-24 (3 days ago): 0
+  2026-02-25 (2 days ago): 3
+  2026-02-26 (yesterday): 8
+  2026-02-27 (today): 12
+
+🔥 Longest Success Streak: 15
+   Current streak: 8
+```
+
 ### 4. Features
 - **Automatic logging**: Every tickle, start, and stop operation is logged
 - **Tracks both systemd services and compose stacks**
@@ -216,6 +256,9 @@ tickle history -n 20
 
 # Clear all history
 tickle history clear
+
+# Show history statistics
+tickle history stats
 ```
 
 ## Implementation Details
@@ -245,6 +288,7 @@ COMMANDS:
   stop                Stop a service or compose stack
   history             Show command history
   history clear       Clear command history
+  history stats       Show history statistics
   (default)           Restart/tickle a service or compose stack
 
   • History is stored in ~/.tickle/history.log
@@ -253,6 +297,7 @@ Examples:
   tickle history              # Show full history
   tickle history -n 10        # Show last 10 entries
   tickle history clear        # Clear all history
+  tickle history stats        # Show history statistics
 ```
 
 ## Benefits

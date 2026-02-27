@@ -1,4 +1,5 @@
 // src/main.rs
+use std::collections::HashMap;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -224,6 +225,40 @@ impl ServiceManager {
 
 /* ------------------ History management ------------------ */
 
+struct HistoryEntry {
+    timestamp: String,
+    command: String,
+    target: String,
+    success: bool,
+}
+
+impl HistoryEntry {
+    fn parse(line: &str) -> Option<Self> {
+        let parts: Vec<&str> = line.splitn(4, " | ").collect();
+        if parts.len() != 4 {
+            return None;
+        }
+        Some(HistoryEntry {
+            timestamp: parts[0].trim().to_string(),
+            command: parts[1].trim().to_string(),
+            target: parts[2].trim().to_string(),
+            success: parts[3].trim() == "SUCCESS",
+        })
+    }
+}
+
+/// Convert seconds since Unix epoch to an approximate YYYY-MM-DD string
+/// using the same formula as get_timestamp(), so log entries match.
+fn approx_date_for_secs(secs: u64) -> String {
+    let days_since_epoch = secs / 86400;
+    let years = days_since_epoch / 365;
+    let remaining_days = days_since_epoch % 365;
+    let year = 1970 + years;
+    let month = (remaining_days / 30) + 1;
+    let day = (remaining_days % 30) + 1;
+    format!("{:04}-{:02}-{:02}", year, month.min(12), day.min(31))
+}
+
 struct HistoryManager {
     history_dir: PathBuf,
     history_file: PathBuf,
@@ -363,6 +398,114 @@ impl HistoryManager {
         }
         Ok(())
     }
+
+    /// Display statistics derived from history
+    fn show_stats(&self) -> Result<(), String> {
+        if !self.history_file.exists() {
+            println!("📊 No history found. Start using tickle to build your stats!");
+            return Ok(());
+        }
+
+        let contents = fs::read_to_string(&self.history_file)
+            .map_err(|e| format!("Failed to read history file: {}", e))?;
+
+        let entries: Vec<HistoryEntry> = contents.lines().filter_map(HistoryEntry::parse).collect();
+
+        if entries.is_empty() {
+            println!("📊 No history entries to analyze.");
+            return Ok(());
+        }
+
+        let total = entries.len();
+        let successes = entries.iter().filter(|e| e.success).count();
+        let failures = total - successes;
+        let success_pct = (successes * 100) / total;
+        let failure_pct = 100 - success_pct;
+
+        let sep = "=".repeat(50);
+        println!("📊 Tickle History Statistics");
+        println!("{}", sep);
+        println!();
+
+        // Overview
+        println!("📈 Overview");
+        println!("  Total operations:  {}", total);
+        println!("  Successes:         {}  ({}%)", successes, success_pct);
+        println!("  Failures:          {}  ({}%)", failures, failure_pct);
+        println!();
+
+        // Per-command breakdown
+        let tickle_count = entries.iter().filter(|e| e.command == "tickle").count();
+        let start_count = entries.iter().filter(|e| e.command == "start").count();
+        let stop_count = entries.iter().filter(|e| e.command == "stop").count();
+
+        println!("🎯 Command Breakdown");
+        println!("  tickle:  {}", tickle_count);
+        println!("  start:   {}", start_count);
+        println!("  stop:    {}", stop_count);
+        println!();
+
+        // Most-tickled services (top 5)
+        let mut service_counts: HashMap<&str, usize> = HashMap::new();
+        for entry in &entries {
+            *service_counts.entry(entry.target.as_str()).or_insert(0) += 1;
+        }
+        let mut sorted_services: Vec<(&str, usize)> = service_counts.into_iter().collect();
+        sorted_services.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+
+        println!("🏆 Most-Tickled Services (Top 5)");
+        for (i, (service, count)) in sorted_services.iter().take(5).enumerate() {
+            println!("  {}. {} ({})", i + 1, service, count);
+        }
+        println!();
+
+        // Recent activity (last 7 days)
+        let now_secs = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(_) => 0,
+        };
+
+        println!("📅 Recent Activity (Last 7 Days)");
+        for days_ago in (0u64..7).rev() {
+            let target_secs = now_secs.saturating_sub(days_ago * 86400);
+            let date_str = approx_date_for_secs(target_secs);
+            let day_count = entries
+                .iter()
+                .filter(|e| e.timestamp.starts_with(&date_str))
+                .count();
+            let label = if days_ago == 0 {
+                " (today)".to_string()
+            } else if days_ago == 1 {
+                " (yesterday)".to_string()
+            } else {
+                format!(" ({} days ago)", days_ago)
+            };
+            println!("  {}{}: {}", date_str, label, day_count);
+        }
+        println!();
+
+        // Longest streak of successes
+        let mut current_streak: usize = 0;
+        let mut max_streak: usize = 0;
+        for entry in &entries {
+            if entry.success {
+                current_streak += 1;
+                if current_streak > max_streak {
+                    max_streak = current_streak;
+                }
+            } else {
+                current_streak = 0;
+            }
+        }
+        println!("🔥 Longest Success Streak: {}", max_streak);
+        if current_streak > 0 && current_streak == max_streak {
+            println!("   (current streak)");
+        } else if current_streak > 0 {
+            println!("   Current streak: {}", current_streak);
+        }
+
+        Ok(())
+    }
 }
 
 /* ------------------ Compose helpers ------------------ */
@@ -494,6 +637,7 @@ fn print_usage() {
     println!("  stop                Stop a service or compose stack");
     println!("  history             Show command history");
     println!("  history clear       Clear command history");
+    println!("  history stats       Show history statistics");
     println!("  completions bash    Print bash completion script");
     println!("  completions zsh     Print zsh completion script");
     println!("  completions fish    Print fish completion script");
@@ -534,6 +678,7 @@ fn print_usage() {
     println!("  tickle history              # Show full history");
     println!("  tickle history -n 10        # Show last 10 entries");
     println!("  tickle history clear        # Clear all history");
+    println!("  tickle history stats        # Show history statistics");
     println!("  tickle start                # in a compose project directory");
     println!("  tickle stop                 # in a compose project directory");
     println!("  tickle                      # in a compose project directory");
@@ -586,7 +731,7 @@ _tickle_completions() {
             return
             ;;
         history)
-            COMPREPLY=($(compgen -W "clear" -- "$cur"))
+            COMPREPLY=($(compgen -W "clear stats" -- "$cur"))
             return
             ;;
         start|stop)
@@ -696,7 +841,7 @@ _tickle_service_args() {
             return
             ;;
         history)
-            local subcmds=('clear:Clear command history')
+            local subcmds=('clear:Clear command history' 'stats:Show history statistics')
             _describe 'subcommand' subcmds
             return
             ;;
@@ -773,6 +918,7 @@ complete -c tickle -n __tickle_no_subcommand -a completions -d "Generate shell c
 
 # history subcommands
 complete -c tickle -n "__fish_seen_subcommand_from history" -a clear -d "Clear command history"
+complete -c tickle -n "__fish_seen_subcommand_from history" -a stats -d "Show history statistics"
 
 # completions shells
 complete -c tickle -n "__fish_seen_subcommand_from completions" -a bash -d "Bash shell"
@@ -849,9 +995,19 @@ fn main() {
 
     // Handle history command
     if matches!(command, TickleCommand::History) {
-        // Check for subcommand (clear)
+        // Check for subcommand (clear or stats)
         if args.len() > 2 && args[2] == "clear" {
             match history_manager.clear_history() {
+                Ok(()) => exit(0),
+                Err(e) => {
+                    eprintln!("❌ Error: {}", e);
+                    exit(1);
+                }
+            }
+        }
+
+        if args.len() > 2 && args[2] == "stats" {
+            match history_manager.show_stats() {
                 Ok(()) => exit(0),
                 Err(e) => {
                     eprintln!("❌ Error: {}", e);
