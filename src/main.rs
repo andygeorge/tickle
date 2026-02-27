@@ -27,6 +27,7 @@ enum TickleCommand {
     Start,
     Stop,
     History,
+    Completions,
 }
 
 struct ServiceManager;
@@ -493,6 +494,9 @@ fn print_usage() {
     println!("  stop                Stop a service or compose stack");
     println!("  history             Show command history");
     println!("  history clear       Clear command history");
+    println!("  completions bash    Print bash completion script");
+    println!("  completions zsh     Print zsh completion script");
+    println!("  completions fish    Print fish completion script");
     println!("  (default)           Restart/tickle a service or compose stack");
     println!();
     println!("OPTIONS:");
@@ -517,6 +521,11 @@ fn print_usage() {
     println!();
     println!("  • History is stored in ~/.tickle/history.log");
     println!();
+    println!("Shell Completions:");
+    println!("  • Bash:  eval \"$(tickle completions bash)\"");
+    println!("  • Zsh:   eval \"$(tickle completions zsh)\"");
+    println!("  • Fish:  tickle completions fish | source");
+    println!();
     println!("Examples:");
     println!("  tickle nginx");
     println!("  tickle start apache2");
@@ -530,6 +539,9 @@ fn print_usage() {
     println!("  tickle                      # in a compose project directory");
     println!("  tickle -f nginx             # restart nginx then follow journalctl");
     println!("  tickle -f                   # restart compose stack then follow logs");
+    println!("  tickle completions bash     # print bash completion script");
+    println!("  tickle completions zsh      # print zsh completion script");
+    println!("  tickle completions fish     # print fish completion script");
 }
 
 /// Parse command from arguments
@@ -539,11 +551,250 @@ fn parse_command(args: &[String]) -> TickleCommand {
             "start" => TickleCommand::Start,
             "stop" => TickleCommand::Stop,
             "history" => TickleCommand::History,
+            "completions" => TickleCommand::Completions,
             _ => TickleCommand::Tickle,
         }
     } else {
         TickleCommand::Tickle
     }
+}
+
+/* ------------------ Shell completions ------------------ */
+
+fn print_bash_completions() {
+    print!("{}", r#"# tickle bash completion
+# Source this file or add to ~/.bashrc:
+#   eval "$(tickle completions bash)"
+
+_tickle_completions() {
+    local cur prev words cword
+    _init_completion 2>/dev/null || {
+        COMPREPLY=()
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+        words=("${COMP_WORDS[@]}")
+        cword=$COMP_CWORD
+    }
+
+    local subcommands="start stop history completions"
+    local flags="-f --follow -s --stop-start -h --help -v --version"
+
+    # Handle subcommand-specific completions
+    case "${words[1]}" in
+        completions)
+            COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur"))
+            return
+            ;;
+        history)
+            COMPREPLY=($(compgen -W "clear" -- "$cur"))
+            return
+            ;;
+        start|stop)
+            # Complete service names for start/stop
+            local services
+            services=$(systemctl list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
+                | awk '{print $1}' | sed 's/\.service$//')
+            local user_services
+            user_services=$(systemctl --user list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
+                | awk '{print $1}' | sed 's/\.service$//')
+            local compose_services=""
+            for f in docker-compose.yml docker-compose.yaml compose.yml compose.yaml container-compose.yml container-compose.yaml; do
+                if [[ -f "$f" ]]; then
+                    compose_services=$(docker compose config --services 2>/dev/null || docker-compose config --services 2>/dev/null || true)
+                    break
+                fi
+            done
+            COMPREPLY=($(compgen -W "$services $user_services $compose_services" -- "$cur"))
+            return
+            ;;
+    esac
+
+    # First word after tickle: offer subcommands, flags, and service names
+    if [[ $cword -eq 1 ]]; then
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "$flags" -- "$cur"))
+        else
+            local services
+            services=$(systemctl list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
+                | awk '{print $1}' | sed 's/\.service$//')
+            local user_services
+            user_services=$(systemctl --user list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
+                | awk '{print $1}' | sed 's/\.service$//')
+            local compose_services=""
+            for f in docker-compose.yml docker-compose.yaml compose.yml compose.yaml container-compose.yml container-compose.yaml; do
+                if [[ -f "$f" ]]; then
+                    compose_services=$(docker compose config --services 2>/dev/null || docker-compose config --services 2>/dev/null || true)
+                    break
+                fi
+            done
+            COMPREPLY=($(compgen -W "$subcommands $flags $services $user_services $compose_services" -- "$cur"))
+        fi
+        return
+    fi
+
+    # After flags like -f/-s, complete service names
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "$flags" -- "$cur"))
+    else
+        local services
+        services=$(systemctl list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
+            | awk '{print $1}' | sed 's/\.service$//')
+        local user_services
+        user_services=$(systemctl --user list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
+            | awk '{print $1}' | sed 's/\.service$//')
+        local compose_services=""
+        for f in docker-compose.yml docker-compose.yaml compose.yml compose.yaml container-compose.yml container-compose.yaml; do
+            if [[ -f "$f" ]]; then
+                compose_services=$(docker compose config --services 2>/dev/null || docker-compose config --services 2>/dev/null || true)
+                break
+            fi
+        done
+        COMPREPLY=($(compgen -W "$services $user_services $compose_services" -- "$cur"))
+    fi
+}
+
+complete -F _tickle_completions tickle
+"#);
+}
+
+fn print_zsh_completions() {
+    print!("{}", r#"#compdef tickle
+# tickle zsh completion
+# Add to ~/.zshrc:
+#   eval "$(tickle completions zsh)"
+# Or place this file in a directory on $fpath.
+
+_tickle() {
+    local context state state_descr line
+    typeset -A opt_args
+
+    _arguments -C \
+        '(-h --help)'{-h,--help}'[Show help message]' \
+        '(-v --version)'{-v,--version}'[Show version information]' \
+        '(-f --follow)'{-f,--follow}'[Follow logs after operation completes]' \
+        '(-s --stop-start)'{-s,--stop-start}'[Force stop/start strategy instead of restart]' \
+        '1: :_tickle_commands' \
+        '*: :_tickle_service_args'
+}
+
+_tickle_commands() {
+    local commands
+    commands=(
+        'start:Start a service or compose stack'
+        'stop:Stop a service or compose stack'
+        'history:Show command history'
+        'completions:Generate shell completion scripts'
+    )
+    _describe 'command' commands
+}
+
+_tickle_service_args() {
+    case "$words[2]" in
+        completions)
+            local shells=('bash:Bash shell' 'zsh:Zsh shell' 'fish:Fish shell')
+            _describe 'shell' shells
+            return
+            ;;
+        history)
+            local subcmds=('clear:Clear command history')
+            _describe 'subcommand' subcmds
+            return
+            ;;
+    esac
+    _tickle_services
+}
+
+_tickle_services() {
+    local -a services user_services compose_services
+
+    services=(${(f)"$(systemctl list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
+        | awk '{print $1}' | sed 's/\.service$//')"})
+    user_services=(${(f)"$(systemctl --user list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
+        | awk '{print $1}' | sed 's/\.service$//')"})
+
+    local compose_file
+    for compose_file in docker-compose.yml docker-compose.yaml compose.yml compose.yaml container-compose.yml container-compose.yaml; do
+        if [[ -f "$compose_file" ]]; then
+            compose_services=(${(f)"$(docker compose config --services 2>/dev/null || docker-compose config --services 2>/dev/null || true)"})
+            break
+        fi
+    done
+
+    _values 'service' $services $user_services $compose_services
+}
+
+_tickle "$@"
+"#);
+}
+
+fn print_fish_completions() {
+    print!("{}", r#"# tickle fish completion
+# Add to your fish config or place in ~/.config/fish/completions/tickle.fish:
+#   tickle completions fish | source
+
+# Disable file completions for tickle
+complete -c tickle -f
+
+# Helper: list loaded systemd services (system + user)
+function __tickle_systemd_services
+    systemctl list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
+        | awk '{print $1}' | sed 's/\.service$//'
+    systemctl --user list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
+        | awk '{print $1}' | sed 's/\.service$//'
+end
+
+# Helper: list compose services if a compose file is present in cwd
+function __tickle_compose_services
+    set -l compose_files docker-compose.yml docker-compose.yaml compose.yml compose.yaml container-compose.yml container-compose.yaml
+    for f in $compose_files
+        if test -f $f
+            docker compose config --services 2>/dev/null; or docker-compose config --services 2>/dev/null
+            return
+        end
+    end
+end
+
+# Helper: true when no subcommand has been given yet
+function __tickle_no_subcommand
+    for token in (commandline -opc)[2..]
+        switch $token
+            case start stop history completions
+                return 1
+        end
+    end
+    return 0
+end
+
+# Subcommands (only when no subcommand present yet)
+complete -c tickle -n __tickle_no_subcommand -a start       -d "Start a service or compose stack"
+complete -c tickle -n __tickle_no_subcommand -a stop        -d "Stop a service or compose stack"
+complete -c tickle -n __tickle_no_subcommand -a history     -d "Show command history"
+complete -c tickle -n __tickle_no_subcommand -a completions -d "Generate shell completion scripts"
+
+# history subcommands
+complete -c tickle -n "__fish_seen_subcommand_from history" -a clear -d "Clear command history"
+
+# completions shells
+complete -c tickle -n "__fish_seen_subcommand_from completions" -a bash -d "Bash shell"
+complete -c tickle -n "__fish_seen_subcommand_from completions" -a zsh  -d "Zsh shell"
+complete -c tickle -n "__fish_seen_subcommand_from completions" -a fish -d "Fish shell"
+
+# Flags (valid outside of history/completions subcommands)
+complete -c tickle -n "not __fish_seen_subcommand_from history completions" \
+    -s f -l follow      -d "Follow logs after the operation completes"
+complete -c tickle -n "not __fish_seen_subcommand_from history completions" \
+    -s s -l stop-start  -d "Force stop/start instead of restart"
+complete -c tickle -s h -l help    -d "Show help message"
+complete -c tickle -s v -l version -d "Show version information"
+complete -c tickle -n "__fish_seen_subcommand_from history" \
+    -s n -d "Show last N lines of history" -r
+
+# Service names (for tickle, start, stop)
+complete -c tickle -n "not __fish_seen_subcommand_from history completions" \
+    -a "(__tickle_systemd_services)" -d "Systemd service"
+complete -c tickle -n "not __fish_seen_subcommand_from history completions" \
+    -a "(__tickle_compose_services)" -d "Compose service"
+"#);
 }
 
 fn main() {
@@ -564,6 +815,26 @@ fn main() {
             }
             _ => {}
         }
+    }
+
+    // Handle completions command (no history manager needed)
+    if matches!(command, TickleCommand::Completions) {
+        let shell = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        match shell {
+            "bash" => print_bash_completions(),
+            "zsh" => print_zsh_completions(),
+            "fish" => print_fish_completions(),
+            "" => {
+                eprintln!("❌ Error: Please specify a shell: bash, zsh, or fish");
+                eprintln!("   Usage: tickle completions <bash|zsh|fish>");
+                exit(1);
+            }
+            other => {
+                eprintln!("❌ Error: Unknown shell '{}'. Supported: bash, zsh, fish", other);
+                exit(1);
+            }
+        }
+        exit(0);
     }
 
     // Initialize history manager
@@ -624,7 +895,7 @@ fn main() {
     let start_index = match command {
         TickleCommand::Start | TickleCommand::Stop => 2, // Skip "tickle" and "start"/"stop"
         TickleCommand::Tickle => 1,                      // Skip just "tickle"
-        TickleCommand::History => unreachable!(),        // Already handled above
+        TickleCommand::History | TickleCommand::Completions => unreachable!(), // Already handled above
     };
 
     // Parse remaining arguments
@@ -676,7 +947,7 @@ fn main() {
                 TickleCommand::Tickle => compose_down_up(compose_file),
                 TickleCommand::Start => compose_start(compose_file),
                 TickleCommand::Stop => compose_stop(compose_file),
-                TickleCommand::History => unreachable!(),
+                TickleCommand::History | TickleCommand::Completions => unreachable!(),
             };
 
             let success = result.is_ok();
@@ -684,7 +955,7 @@ fn main() {
                 TickleCommand::Tickle => "tickle",
                 TickleCommand::Start => "start",
                 TickleCommand::Stop => "stop",
-                TickleCommand::History => unreachable!(),
+                TickleCommand::History | TickleCommand::Completions => unreachable!(),
             };
 
             // Log to history
@@ -733,7 +1004,7 @@ fn main() {
         TickleCommand::Stop => service_manager
             .check_systemctl_available()
             .and_then(|_| service_manager.stop_service(service_name)),
-        TickleCommand::History => unreachable!(),
+        TickleCommand::History | TickleCommand::Completions => unreachable!(),
     };
 
     let success = result.is_ok();
@@ -741,7 +1012,7 @@ fn main() {
         TickleCommand::Tickle => "tickle",
         TickleCommand::Start => "start",
         TickleCommand::Stop => "stop",
-        TickleCommand::History => unreachable!(),
+        TickleCommand::History | TickleCommand::Completions => unreachable!(),
     };
 
     // Log to history
@@ -757,7 +1028,7 @@ fn main() {
                     TickleCommand::Tickle => "Tickle",
                     TickleCommand::Start => "Start",
                     TickleCommand::Stop => "Stop",
-                    TickleCommand::History => unreachable!(),
+                    TickleCommand::History | TickleCommand::Completions => unreachable!(),
                 }
             );
 

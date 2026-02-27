@@ -3,7 +3,7 @@
 ## [Documentation](./docs/)
 
 ```bash
-cargo install --git https://github.com/andygeorge/tickle#0.6.1 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
+cargo install --git https://github.com/andygeorge/tickle#0.7.0 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
 ```
 
 An almost-entirely vibe-coded smart systemd service and Docker restart tool. For systemd, it intelligently chooses between `restart` and `stop`/`start` based on service capabilities, and keeps a history of `tickle`s.
@@ -115,6 +115,35 @@ $ tickle
 - `-s, --stop-start`: Force stop/start strategy instead of restart
 - `-h, --help`: Show help message
 - No arguments: When run without arguments in a compose project directory, will restart entire Docker Compose stack
+
+## Shell Completions
+
+`tickle` can generate completion scripts for bash, zsh, and fish. Completions include subcommands, flags, and systemd service names (system and user). When a compose file is present in the current directory, compose service names are also completed.
+
+### Bash
+
+Add to `~/.bashrc`:
+```bash
+eval "$(tickle completions bash)"
+```
+
+### Zsh
+
+Add to `~/.zshrc`:
+```zsh
+eval "$(tickle completions zsh)"
+```
+
+### Fish
+
+```fish
+tickle completions fish | source
+```
+
+Or to make it permanent, place the output in `~/.config/fish/completions/tickle.fish`:
+```fish
+tickle completions fish > ~/.config/fish/completions/tickle.fish
+```
 
 # Tickle History Feature
 
