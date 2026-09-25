@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, exit};
+use std::process::{self, Command, exit};
 use std::time::SystemTime;
 
 #[derive(Debug)]
@@ -537,6 +537,17 @@ impl ComposeProject {
         args
     }
 
+    /// Config files the labels pointed at that are not actually on disk. Compose
+    /// labels can hold values no local path resolution can satisfy — `-` for stdin,
+    /// a remote URL, a path from another host — and those must not reach the cache.
+    fn missing_config_files(&self) -> Vec<String> {
+        self.config_files
+            .iter()
+            .filter(|f| !Path::new(f).exists())
+            .cloned()
+            .collect()
+    }
+
     fn to_cache_line(&self) -> String {
         format!(
             "{}\t{}\t{}",
@@ -662,8 +673,14 @@ impl ProjectCache {
             .iter()
             .map(|e| format!("{}\n", e.to_cache_line()))
             .collect();
-        fs::write(&self.cache_file, body)
-            .map_err(|e| format!("Failed to write project cache: {}", e))
+
+        // Write-then-rename: a concurrent tickle must never observe a truncated cache.
+        let temp_file = self.cache_file.with_extension(format!("tmp{}", process::id()));
+        fs::write(&temp_file, body).map_err(|e| format!("Failed to write project cache: {}", e))?;
+        fs::rename(&temp_file, &self.cache_file).map_err(|e| {
+            fs::remove_file(&temp_file).ok();
+            format!("Failed to replace project cache: {}", e)
+        })
     }
 
     fn lookup(&self, name: &str) -> Option<ComposeProject> {
@@ -733,18 +750,42 @@ fn summarize_project_names(names: &[String]) -> String {
 /// Locate a compose project by label, falling back to the cache once `down` has
 /// removed the labelled containers.
 fn resolve_compose_project(name: &str, cache: &ProjectCache) -> Result<ComposeProject, String> {
-    let labels = query_project_labels(name)?;
+    // A docker failure is not fatal: the cache may still know where the project
+    // lives, and compose itself may be reachable through the legacy CLI.
+    let labels = query_project_labels(name).unwrap_or_else(|e| {
+        eprintln!("⚠️  Warning: {}", e);
+        String::new()
+    });
+    let labelled = parse_project_labels(name, &labels);
 
-    if let Some(project) = parse_project_labels(name, &labels) {
-        if let Err(e) = cache.store(&project) {
-            eprintln!("⚠️  Warning: Failed to cache project location: {}", e);
+    if let Some(project) = &labelled {
+        let missing = project.missing_config_files();
+        if missing.is_empty() {
+            if let Err(e) = cache.store(project) {
+                eprintln!("⚠️  Warning: Failed to cache project location: {}", e);
+            }
+            return Ok(project.clone());
         }
-        return Ok(project);
+        return Err(format!(
+            "Project '{}' is labelled with compose files that are not on this host: {}",
+            name,
+            missing.join(", ")
+        ));
     }
 
     if let Some(project) = cache.lookup(name) {
-        println!("💾 No containers found for '{}'; using cached location.", name);
+        println!(
+            "💾 No containers found for '{}'; using cached location.",
+            name
+        );
         return Ok(project);
+    }
+
+    if !labels.trim().is_empty() {
+        return Err(format!(
+            "Containers for '{}' exist but carry no usable compose file labels.",
+            name
+        ));
     }
 
     let known = known_project_names();
@@ -781,6 +822,16 @@ fn find_compose_file() -> Option<&'static str> {
         .map(|v| v as _)
 }
 
+/// Whether the `docker compose` plugin is installed, as opposed to the command
+/// having failed for a reason worth reporting.
+fn compose_plugin_available() -> bool {
+    Command::new("docker")
+        .args(["compose", "version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Try running `docker compose <args...>` first; fall back to `docker-compose <args...>`.
 fn run_compose_with_best_cli(args: &[&str]) -> Result<(), String> {
     // Prefer modern `docker compose`
@@ -790,15 +841,14 @@ fn run_compose_with_best_cli(args: &[&str]) -> Result<(), String> {
     if let Ok(out) = try_docker_compose_plugin {
         if out.status.success() {
             return Ok(());
-        } else {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            // If the failure might be due to missing plugin, we'll try legacy next.
-            // Otherwise still try legacy for compatibility.
-            // println!("debug docker compose error: {}", stderr);
-            // fallthrough
-            if !stderr.is_empty() {
-                // continue to legacy attempt
-            }
+        }
+        // Only fall back when the plugin itself is absent. Otherwise this was a real
+        // compose failure, and reporting the legacy CLI's error instead would hide it.
+        if compose_plugin_available() {
+            return Err(format!(
+                "Compose command failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
         }
     }
 
@@ -1019,18 +1069,27 @@ _tickle_completions() {
 
     # A compose project name always follows -p/--project
     if [[ "$prev" == "-p" || "$prev" == "--project" ]]; then
-        COMPREPLY=($(compgen -W "$(_tickle_compose_projects)" -- "$cur"))
+        mapfile -t COMPREPLY < <(compgen -W "$(_tickle_compose_projects)" -- "$cur")
         return
     fi
+
+    # --project cannot be combined with service names, so offer only flags after it
+    local word
+    for word in "${words[@]:1}"; do
+        if [[ "$word" == "-p" || "$word" == "--project" ]]; then
+            mapfile -t COMPREPLY < <(compgen -W "-f --follow -s --stop-start" -- "$cur")
+            return
+        fi
+    done
 
     # Handle subcommand-specific completions
     case "${words[1]}" in
         completions)
-            COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur"))
+            mapfile -t COMPREPLY < <(compgen -W "bash zsh fish" -- "$cur")
             return
             ;;
         history)
-            COMPREPLY=($(compgen -W "clear stats" -- "$cur"))
+            mapfile -t COMPREPLY < <(compgen -W "clear stats" -- "$cur")
             return
             ;;
         start|stop)
@@ -1048,7 +1107,7 @@ _tickle_completions() {
                     break
                 fi
             done
-            COMPREPLY=($(compgen -W "$services $user_services $compose_services" -- "$cur"))
+            mapfile -t COMPREPLY < <(compgen -W "$services $user_services $compose_services" -- "$cur")
             return
             ;;
     esac
@@ -1056,7 +1115,7 @@ _tickle_completions() {
     # First word after tickle: offer subcommands, flags, and service names
     if [[ $cword -eq 1 ]]; then
         if [[ "$cur" == -* ]]; then
-            COMPREPLY=($(compgen -W "$flags" -- "$cur"))
+            mapfile -t COMPREPLY < <(compgen -W "$flags" -- "$cur")
         else
             local services
             services=$(systemctl list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
@@ -1071,14 +1130,14 @@ _tickle_completions() {
                     break
                 fi
             done
-            COMPREPLY=($(compgen -W "$subcommands $flags $services $user_services $compose_services" -- "$cur"))
+            mapfile -t COMPREPLY < <(compgen -W "$subcommands $flags $services $user_services $compose_services" -- "$cur")
         fi
         return
     fi
 
     # After flags like -f/-s, complete service names
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "$flags" -- "$cur"))
+        mapfile -t COMPREPLY < <(compgen -W "$flags" -- "$cur")
     else
         local services
         services=$(systemctl list-units --type=service --state=loaded --no-legend --no-pager 2>/dev/null \
@@ -1093,7 +1152,7 @@ _tickle_completions() {
                 break
             fi
         done
-        COMPREPLY=($(compgen -W "$services $user_services $compose_services" -- "$cur"))
+        mapfile -t COMPREPLY < <(compgen -W "$services $user_services $compose_services" -- "$cur")
     fi
 }
 
@@ -1126,7 +1185,8 @@ _tickle_compose_projects() {
     local -a projects
     projects=(${(f)"$(docker ps -a --filter label=com.docker.compose.project \
         --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | sort -u)"})
-    _values 'project' $projects
+    (( ${#projects} )) || return 1
+    _wanted projects expl 'compose project' compadd -a projects
 }
 
 _tickle_commands() {
@@ -1212,6 +1272,17 @@ function __tickle_compose_projects
         --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | sort -u
 end
 
+# Helper: true when -p/--project has not been given yet
+function __tickle_no_project
+    for token in (commandline -opc)
+        switch $token
+            case -p --project
+                return 1
+        end
+    end
+    return 0
+end
+
 # Helper: true when no subcommand has been given yet
 function __tickle_no_subcommand
     for token in (commandline -opc)[2..]
@@ -1250,10 +1321,10 @@ complete -c tickle -s v -l version -d "Show version information"
 complete -c tickle -n "__fish_seen_subcommand_from history" \
     -s n -d "Show last N lines of history" -r
 
-# Service names (for tickle, start, stop)
-complete -c tickle -n "not __fish_seen_subcommand_from history completions" \
+# Service names (for tickle, start, stop) — not valid once --project is present
+complete -c tickle -n "not __fish_seen_subcommand_from history completions; and __tickle_no_project" \
     -a "(__tickle_systemd_services)" -d "Systemd service"
-complete -c tickle -n "not __fish_seen_subcommand_from history completions" \
+complete -c tickle -n "not __fish_seen_subcommand_from history completions; and __tickle_no_project" \
     -a "(__tickle_compose_services)" -d "Compose service"
 "#);
 }
@@ -1364,6 +1435,23 @@ mod tests {
     fn rejects_malformed_cache_lines() {
         assert!(ComposeProject::from_cache_line("").is_none());
         assert!(ComposeProject::from_cache_line("paperless\t/srv/paperless").is_none());
+    }
+
+    #[test]
+    fn reports_config_files_that_are_not_on_disk() {
+        let dir = scratch_dir("missing_files");
+        let present = project_in(&dir, "paperless");
+        let mut absent = present.clone();
+        absent
+            .config_files
+            .push(dir.join("nope.yml").to_string_lossy().into_owned());
+
+        assert!(present.missing_config_files().is_empty());
+        assert_eq!(
+            absent.missing_config_files(),
+            vec![dir.join("nope.yml").to_string_lossy().into_owned()]
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1581,7 +1669,9 @@ fn main() {
             "-p" | "--project" => {
                 i += 1;
                 match args.get(i) {
-                    Some(name) if !name.starts_with('-') => project_name = Some(name.clone()),
+                    Some(name) if !name.is_empty() && !name.starts_with('-') => {
+                        project_name = Some(name.clone())
+                    }
                     _ => {
                         eprintln!("❌ Error: --project requires a compose project name");
                         exit(1);
