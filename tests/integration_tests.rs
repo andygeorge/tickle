@@ -176,6 +176,16 @@ fn test_tickle_with_compose_file() {
             || stdout.contains("docker")
     );
 
+    // On a host that really has docker, the run above started the stack for real.
+    // Tear it down so the suite does not leave containers behind.
+    Command::new("docker")
+        .args(["compose", "-f"])
+        .arg(&compose_path)
+        .arg("down")
+        .current_dir(&test_dir)
+        .output()
+        .ok();
+
     cleanup_dir(&test_dir);
 }
 
@@ -342,4 +352,73 @@ fn test_multiple_help_flags() {
         .expect("Failed to execute tickle");
 
     assert!(output.status.success());
+}
+
+#[test]
+fn test_project_flag_documented_in_help() {
+    let output = Command::new(get_tickle_binary())
+        .arg("--help")
+        .output()
+        .expect("Failed to execute tickle");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--project"));
+    assert!(stdout.contains("-p"));
+}
+
+#[test]
+fn test_project_flag_requires_a_value() {
+    let test_dir = create_temp_dir("project_no_value");
+
+    let output = Command::new(get_tickle_binary())
+        .arg("-p")
+        .current_dir(&test_dir)
+        .env("HOME", &test_dir)
+        .output()
+        .expect("Failed to execute tickle");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--project"));
+
+    cleanup_dir(&test_dir);
+}
+
+#[test]
+fn test_project_flag_rejects_service_names() {
+    let test_dir = create_temp_dir("project_with_service");
+
+    let output = Command::new(get_tickle_binary())
+        .args(["-p", "someproject", "nginx"])
+        .current_dir(&test_dir)
+        .env("HOME", &test_dir)
+        .output()
+        .expect("Failed to execute tickle");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--project"));
+
+    cleanup_dir(&test_dir);
+}
+
+#[test]
+fn test_project_flag_works_with_stop_subcommand() {
+    let test_dir = create_temp_dir("project_stop_unknown");
+
+    // No docker project by this name exists, so this must fail cleanly rather
+    // than fall through to systemd or to compose-file-in-cwd handling.
+    let output = Command::new(get_tickle_binary())
+        .args(["stop", "-p", "tickle-nonexistent-project"])
+        .current_dir(&test_dir)
+        .env("HOME", &test_dir)
+        .output()
+        .expect("Failed to execute tickle");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("tickle-nonexistent-project"));
+
+    cleanup_dir(&test_dir);
 }

@@ -508,6 +508,260 @@ impl HistoryManager {
     }
 }
 
+/* ------------------ Compose projects (label discovery) ------------------ */
+
+const LABEL_PROJECT: &str = "com.docker.compose.project";
+const LABEL_CONFIG_FILES: &str = "com.docker.compose.project.config_files";
+const LABEL_WORKING_DIR: &str = "com.docker.compose.project.working_dir";
+
+#[derive(Debug, Clone, PartialEq)]
+struct ComposeProject {
+    name: String,
+    working_dir: String,
+    config_files: Vec<String>,
+}
+
+impl ComposeProject {
+    /// Compose CLI arguments that pin an operation to this project, from anywhere.
+    fn compose_args(&self) -> Vec<String> {
+        let mut args = vec![
+            "-p".to_string(),
+            self.name.clone(),
+            "--project-directory".to_string(),
+            self.working_dir.clone(),
+        ];
+        for file in &self.config_files {
+            args.push("-f".to_string());
+            args.push(file.clone());
+        }
+        args
+    }
+
+    fn to_cache_line(&self) -> String {
+        format!(
+            "{}\t{}\t{}",
+            self.name,
+            self.working_dir,
+            self.config_files.join(",")
+        )
+    }
+
+    fn from_cache_line(line: &str) -> Option<Self> {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let config_files: Vec<String> = parts[2]
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        if parts[0].is_empty() || config_files.is_empty() {
+            return None;
+        }
+        Some(ComposeProject {
+            name: parts[0].to_string(),
+            working_dir: parts[1].to_string(),
+            config_files,
+        })
+    }
+}
+
+/// Parse `docker ps` label output — `<config_files>\t<working_dir>` — into a project.
+/// Every container of a project carries the same labels, so only the first line matters.
+fn parse_project_labels(name: &str, stdout: &str) -> Option<ComposeProject> {
+    let line = stdout.lines().find(|l| !l.trim().is_empty())?;
+    let (raw_files, working_dir) = line.split_once('\t')?;
+    let working_dir = working_dir.trim();
+
+    let mut config_files = Vec::new();
+    for file in raw_files.split(',').map(str::trim).filter(|f| !f.is_empty()) {
+        if Path::new(file).is_absolute() {
+            config_files.push(file.to_string());
+        } else if working_dir.is_empty() {
+            return None;
+        } else {
+            config_files.push(
+                Path::new(working_dir)
+                    .join(file)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+
+    if config_files.is_empty() {
+        return None;
+    }
+
+    Some(ComposeProject {
+        name: name.to_string(),
+        working_dir: working_dir.to_string(),
+        config_files,
+    })
+}
+
+/// Parse `docker ps` project-name output into a sorted, de-duplicated list.
+fn parse_project_names(stdout: &str) -> Vec<String> {
+    let mut names: Vec<String> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Remembers where each compose project lives, so a project stays reachable after
+/// `down` removes the containers that carried its labels.
+struct ProjectCache {
+    cache_file: PathBuf,
+}
+
+impl ProjectCache {
+    fn new() -> Result<Self, String> {
+        let home_dir =
+            env::var("HOME").map_err(|_| "Could not determine HOME directory".to_string())?;
+        Ok(Self::new_in(
+            PathBuf::from(home_dir).join(".tickle").join("projects.tsv"),
+        ))
+    }
+
+    fn new_in(cache_file: PathBuf) -> Self {
+        ProjectCache { cache_file }
+    }
+
+    fn entries(&self) -> Vec<ComposeProject> {
+        fs::read_to_string(&self.cache_file)
+            .map(|contents| {
+                contents
+                    .lines()
+                    .filter_map(ComposeProject::from_cache_line)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn store(&self, project: &ComposeProject) -> Result<(), String> {
+        if let Some(parent) = self.cache_file.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create cache directory: {}", e))?;
+        }
+
+        let mut kept: Vec<ComposeProject> = self
+            .entries()
+            .into_iter()
+            .filter(|e| e.name != project.name)
+            .collect();
+        kept.push(project.clone());
+
+        let body: String = kept
+            .iter()
+            .map(|e| format!("{}\n", e.to_cache_line()))
+            .collect();
+        fs::write(&self.cache_file, body)
+            .map_err(|e| format!("Failed to write project cache: {}", e))
+    }
+
+    fn lookup(&self, name: &str) -> Option<ComposeProject> {
+        self.entries().into_iter().find(|e| {
+            e.name == name && e.config_files.iter().all(|f| Path::new(f).exists())
+        })
+    }
+}
+
+/// Ask docker for the compose labels of any container belonging to `name`.
+fn query_project_labels(name: &str) -> Result<String, String> {
+    let output = Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            &format!("label={}={}", LABEL_PROJECT, name),
+            "--format",
+            &format!(
+                "{{{{.Label \"{}\"}}}}\t{{{{.Label \"{}\"}}}}",
+                LABEL_CONFIG_FILES, LABEL_WORKING_DIR
+            ),
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run docker: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "docker ps failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Every compose project docker currently knows about, running or not.
+fn known_project_names() -> Vec<String> {
+    Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            &format!("label={}", LABEL_PROJECT),
+            "--format",
+            &format!("{{{{.Label \"{}\"}}}}", LABEL_PROJECT),
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| parse_project_names(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default()
+}
+
+/// Render a project list for an error message, capped so a busy host does not
+/// bury the actual error under a wall of names.
+fn summarize_project_names(names: &[String]) -> String {
+    const MAX_SHOWN: usize = 10;
+    let shown = names.iter().take(MAX_SHOWN).cloned().collect::<Vec<_>>();
+    let summary = shown.join(", ");
+    if names.len() > MAX_SHOWN {
+        format!("{} (and {} more)", summary, names.len() - MAX_SHOWN)
+    } else {
+        summary
+    }
+}
+
+/// Locate a compose project by label, falling back to the cache once `down` has
+/// removed the labelled containers.
+fn resolve_compose_project(name: &str, cache: &ProjectCache) -> Result<ComposeProject, String> {
+    let labels = query_project_labels(name)?;
+
+    if let Some(project) = parse_project_labels(name, &labels) {
+        if let Err(e) = cache.store(&project) {
+            eprintln!("⚠️  Warning: Failed to cache project location: {}", e);
+        }
+        return Ok(project);
+    }
+
+    if let Some(project) = cache.lookup(name) {
+        println!("💾 No containers found for '{}'; using cached location.", name);
+        return Ok(project);
+    }
+
+    let known = known_project_names();
+    if known.is_empty() {
+        Err(format!(
+            "No compose project named '{}' found, and docker reports no compose projects at all.",
+            name
+        ))
+    } else {
+        Err(format!(
+            "No compose project named '{}' found. Known projects: {}",
+            name,
+            summarize_project_names(&known)
+        ))
+    }
+}
+
 /* ------------------ Compose helpers ------------------ */
 
 /// Return the first compose file found in the CWD, if any.
@@ -563,52 +817,67 @@ fn run_compose_with_best_cli(args: &[&str]) -> Result<(), String> {
     }
 }
 
-/// Perform `compose down` then `compose up -d` against the given compose file.
-fn compose_down_up(compose_file: &str) -> Result<(), String> {
+/// Run a compose subcommand against a pre-built selector (`-f FILE` or a full project pin).
+fn run_compose(selector: &[String], subcommand: &[&str]) -> Result<(), String> {
+    let args: Vec<&str> = selector
+        .iter()
+        .map(String::as_str)
+        .chain(subcommand.iter().copied())
+        .collect();
+    run_compose_with_best_cli(&args)
+}
+
+/// Perform `compose down` then `compose up -d` against the selected stack.
+fn compose_down_up(selector: &[String], label: &str) -> Result<(), String> {
     println!(
-        "🐳 Compose file detected: {}. Performing `docker compose down`...",
-        compose_file
+        "🐳 Compose stack: {}. Performing `docker compose down`...",
+        label
     );
-    run_compose_with_best_cli(&["-f", compose_file, "down"])?;
+    run_compose(selector, &["down"])?;
     println!("🚀 Bringing stack back up in detached mode...");
-    run_compose_with_best_cli(&["-f", compose_file, "up", "-d"])?;
+    run_compose(selector, &["up", "-d"])?;
     println!("✅ Compose stack restarted.");
     Ok(())
 }
 
 /// Start compose stack
-fn compose_start(compose_file: &str) -> Result<(), String> {
-    println!("🐳 Starting compose stack: {}...", compose_file);
-    run_compose_with_best_cli(&["-f", compose_file, "up", "-d"])?;
+fn compose_start(selector: &[String], label: &str) -> Result<(), String> {
+    println!("🐳 Starting compose stack: {}...", label);
+    run_compose(selector, &["up", "-d"])?;
     println!("✅ Compose stack started.");
     Ok(())
 }
 
 /// Stop compose stack
-fn compose_stop(compose_file: &str) -> Result<(), String> {
-    println!("🐳 Stopping compose stack: {}...", compose_file);
-    run_compose_with_best_cli(&["-f", compose_file, "down"])?;
+fn compose_stop(selector: &[String], label: &str) -> Result<(), String> {
+    println!("🐳 Stopping compose stack: {}...", label);
+    run_compose(selector, &["down"])?;
     println!("✅ Compose stack stopped.");
     Ok(())
 }
 
 /* ------------------ Log following ------------------ */
 
-/// Replace the current process with `docker compose -f FILE logs -f`.
+/// Replace the current process with `docker compose <selector> logs -f`.
 /// Tries `docker compose` first, falls back to `docker-compose`.
-fn follow_compose_logs(compose_file: &str) -> ! {
+fn follow_compose_logs(selector: &[String]) -> ! {
     println!("📋 Following compose logs (Ctrl+C to stop)...");
+    let tail = ["logs", "-f"];
+    let args: Vec<&str> = selector
+        .iter()
+        .map(String::as_str)
+        .chain(tail.iter().copied())
+        .collect();
+
     let err = Command::new("docker")
-        .args(["compose", "-f", compose_file, "logs", "-f"])
+        .args(std::iter::once("compose").chain(args.iter().copied()))
         .exec();
     // exec() only returns on failure — try legacy CLI
     eprintln!(
         "⚠️  docker compose not available ({}), trying docker-compose...",
         err
     );
-    let err = Command::new("docker-compose")
-        .args(["-f", compose_file, "logs", "-f"])
-        .exec();
+    let err = Command::new("docker-compose").args(&args).exec();
     eprintln!("❌ Failed to follow logs: {}", err);
     exit(1);
 }
@@ -646,6 +915,7 @@ fn print_usage() {
     println!("OPTIONS:");
     println!("  -f, --follow        Follow logs after the operation completes");
     println!("  -s, --stop-start    Force stop/start instead of restart (tickle only)");
+    println!("  -p, --project <p>   Act on a running compose project by name, from anywhere");
     println!("  -n <lines>          Show last N lines of history (with history command)");
     println!("  -v, --version       Show version information");
     println!("  -h, --help          Show this help message");
@@ -657,6 +927,14 @@ fn print_usage() {
     println!("        tickle          -> docker compose down && docker compose up -d");
     println!("        tickle start    -> docker compose up -d");
     println!("        tickle stop     -> docker compose down");
+    println!();
+    println!("  • With --project, tickle finds the stack by its");
+    println!("    com.docker.compose.project label, so you can run it from any directory:");
+    println!("        tickle -p paperless        -> down && up -d that project");
+    println!("        tickle start -p paperless  -> up -d that project");
+    println!("        tickle stop -p paperless   -> down that project");
+    println!("    The project location is remembered in ~/.tickle/projects.tsv, so a");
+    println!("    stopped stack stays reachable after its containers are removed.");
     println!();
     println!("  • Otherwise, tickle will operate on the named systemd service(s):");
     println!("        tickle nginx             -> restart nginx");
@@ -682,6 +960,9 @@ fn print_usage() {
     println!("  tickle start apache2");
     println!("  tickle stop postgresql");
     println!("  tickle --stop-start apache2");
+    println!("  tickle -p paperless         # restart a compose project from anywhere");
+    println!("  tickle stop -p paperless    # stop that project");
+    println!("  tickle -f -p paperless      # restart it, then follow its logs");
     println!("  tickle history              # Show full history");
     println!("  tickle history -n 10        # Show last 10 entries");
     println!("  tickle history clear        # Clear all history");
@@ -718,6 +999,11 @@ fn print_bash_completions() {
 # Source this file or add to ~/.bashrc:
 #   eval "$(tickle completions bash)"
 
+_tickle_compose_projects() {
+    docker ps -a --filter label=com.docker.compose.project \
+        --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | sort -u
+}
+
 _tickle_completions() {
     local cur prev words cword
     _init_completion 2>/dev/null || {
@@ -729,7 +1015,13 @@ _tickle_completions() {
     }
 
     local subcommands="start stop history completions"
-    local flags="-f --follow -s --stop-start -h --help -v --version"
+    local flags="-f --follow -s --stop-start -p --project -h --help -v --version"
+
+    # A compose project name always follows -p/--project
+    if [[ "$prev" == "-p" || "$prev" == "--project" ]]; then
+        COMPREPLY=($(compgen -W "$(_tickle_compose_projects)" -- "$cur"))
+        return
+    fi
 
     # Handle subcommand-specific completions
     case "${words[1]}" in
@@ -825,8 +1117,16 @@ _tickle() {
         '(-v --version)'{-v,--version}'[Show version information]' \
         '(-f --follow)'{-f,--follow}'[Follow logs after operation completes]' \
         '(-s --stop-start)'{-s,--stop-start}'[Force stop/start strategy instead of restart]' \
+        '(-p --project)'{-p,--project}'[Act on a compose project by name]:project:_tickle_compose_projects' \
         '1: :_tickle_commands' \
         '*: :_tickle_service_args'
+}
+
+_tickle_compose_projects() {
+    local -a projects
+    projects=(${(f)"$(docker ps -a --filter label=com.docker.compose.project \
+        --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | sort -u)"})
+    _values 'project' $projects
 }
 
 _tickle_commands() {
@@ -906,6 +1206,12 @@ function __tickle_compose_services
     end
 end
 
+# Helper: list compose project names known to docker, running or not
+function __tickle_compose_projects
+    docker ps -a --filter label=com.docker.compose.project \
+        --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | sort -u
+end
+
 # Helper: true when no subcommand has been given yet
 function __tickle_no_subcommand
     for token in (commandline -opc)[2..]
@@ -937,6 +1243,8 @@ complete -c tickle -n "not __fish_seen_subcommand_from history completions" \
     -s f -l follow      -d "Follow logs after the operation completes"
 complete -c tickle -n "not __fish_seen_subcommand_from history completions" \
     -s s -l stop-start  -d "Force stop/start instead of restart"
+complete -c tickle -n "not __fish_seen_subcommand_from history completions" \
+    -s p -l project -r -f -a "(__tickle_compose_projects)" -d "Compose project"
 complete -c tickle -s h -l help    -d "Show help message"
 complete -c tickle -s v -l version -d "Show version information"
 complete -c tickle -n "__fish_seen_subcommand_from history" \
@@ -948,6 +1256,199 @@ complete -c tickle -n "not __fish_seen_subcommand_from history completions" \
 complete -c tickle -n "not __fish_seen_subcommand_from history completions" \
     -a "(__tickle_compose_services)" -d "Compose service"
 "#);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_absolute_config_files_from_labels() {
+        let out = "/srv/paperless/docker-compose.yml\t/srv/paperless\n";
+        let project = parse_project_labels("paperless", out).expect("should parse");
+
+        assert_eq!(project.name, "paperless");
+        assert_eq!(project.working_dir, "/srv/paperless");
+        assert_eq!(
+            project.config_files,
+            vec!["/srv/paperless/docker-compose.yml".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolves_relative_config_files_against_working_dir() {
+        let out = "docker-compose.yml,docker-compose.override.yml\t/srv/paperless\n";
+        let project = parse_project_labels("paperless", out).expect("should parse");
+
+        assert_eq!(
+            project.config_files,
+            vec![
+                "/srv/paperless/docker-compose.yml".to_string(),
+                "/srv/paperless/docker-compose.override.yml".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_all_but_the_first_container_line() {
+        let out = "/srv/a/compose.yml\t/srv/a\n/srv/a/compose.yml\t/srv/a\n";
+        let project = parse_project_labels("a", out).expect("should parse");
+
+        assert_eq!(project.config_files.len(), 1);
+    }
+
+    #[test]
+    fn rejects_labels_with_no_config_files() {
+        assert!(parse_project_labels("ghost", "").is_none());
+        assert!(parse_project_labels("ghost", "\t/srv/ghost\n").is_none());
+    }
+
+    #[test]
+    fn rejects_relative_config_files_with_no_working_dir() {
+        assert!(parse_project_labels("ghost", "compose.yml\t\n").is_none());
+    }
+
+    #[test]
+    fn builds_compose_args_with_project_name_and_every_config_file() {
+        let project = ComposeProject {
+            name: "paperless".to_string(),
+            working_dir: "/srv/paperless".to_string(),
+            config_files: vec![
+                "/srv/paperless/compose.yml".to_string(),
+                "/srv/paperless/override.yml".to_string(),
+            ],
+        };
+
+        assert_eq!(
+            project.compose_args(),
+            vec![
+                "-p",
+                "paperless",
+                "--project-directory",
+                "/srv/paperless",
+                "-f",
+                "/srv/paperless/compose.yml",
+                "-f",
+                "/srv/paperless/override.yml",
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_unique_sorted_project_names() {
+        let out = "beta\nalpha\nbeta\n\nalpha\n";
+
+        assert_eq!(
+            parse_project_names(out),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+    }
+
+    #[test]
+    fn cache_line_round_trips_a_project() {
+        let project = ComposeProject {
+            name: "paperless".to_string(),
+            working_dir: "/srv/paperless".to_string(),
+            config_files: vec![
+                "/srv/paperless/compose.yml".to_string(),
+                "/srv/paperless/override.yml".to_string(),
+            ],
+        };
+
+        let restored = ComposeProject::from_cache_line(&project.to_cache_line());
+
+        assert_eq!(restored, Some(project));
+    }
+
+    #[test]
+    fn rejects_malformed_cache_lines() {
+        assert!(ComposeProject::from_cache_line("").is_none());
+        assert!(ComposeProject::from_cache_line("paperless\t/srv/paperless").is_none());
+    }
+
+    #[test]
+    fn lists_every_project_when_there_are_only_a_few() {
+        let names = vec!["alpha".to_string(), "beta".to_string()];
+
+        assert_eq!(summarize_project_names(&names), "alpha, beta");
+    }
+
+    #[test]
+    fn truncates_a_long_project_list() {
+        let names: Vec<String> = (0..15).map(|i| format!("p{:02}", i)).collect();
+
+        assert_eq!(
+            summarize_project_names(&names),
+            "p00, p01, p02, p03, p04, p05, p06, p07, p08, p09 (and 5 more)"
+        );
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("tickle_unit_{}", name));
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("failed to create scratch dir");
+        dir
+    }
+
+    fn project_in(dir: &Path, name: &str) -> ComposeProject {
+        let compose_file = dir.join("compose.yml");
+        fs::write(&compose_file, "services: {}\n").expect("failed to write compose file");
+        ComposeProject {
+            name: name.to_string(),
+            working_dir: dir.to_string_lossy().into_owned(),
+            config_files: vec![compose_file.to_string_lossy().into_owned()],
+        }
+    }
+
+    #[test]
+    fn cache_returns_a_stored_project() {
+        let dir = scratch_dir("cache_store");
+        let cache = ProjectCache::new_in(dir.join("projects.tsv"));
+        let project = project_in(&dir, "paperless");
+
+        cache.store(&project).expect("store should succeed");
+
+        assert_eq!(cache.lookup("paperless"), Some(project));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cache_keeps_one_entry_per_project_after_restore() {
+        let dir = scratch_dir("cache_replace");
+        let cache = ProjectCache::new_in(dir.join("projects.tsv"));
+        let mut project = project_in(&dir, "paperless");
+
+        cache.store(&project).expect("first store should succeed");
+        project.working_dir = dir.join("moved").to_string_lossy().into_owned();
+        cache.store(&project).expect("second store should succeed");
+
+        let contents = fs::read_to_string(dir.join("projects.tsv")).expect("cache should exist");
+        assert_eq!(contents.lines().count(), 1);
+        assert_eq!(cache.lookup("paperless"), Some(project));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cache_drops_entries_whose_config_file_is_gone() {
+        let dir = scratch_dir("cache_stale");
+        let cache = ProjectCache::new_in(dir.join("projects.tsv"));
+        let project = project_in(&dir, "paperless");
+        cache.store(&project).expect("store should succeed");
+
+        fs::remove_file(&project.config_files[0]).expect("failed to remove compose file");
+
+        assert_eq!(cache.lookup("paperless"), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cache_returns_nothing_for_an_unknown_project() {
+        let dir = scratch_dir("cache_miss");
+        let cache = ProjectCache::new_in(dir.join("projects.tsv"));
+
+        assert_eq!(cache.lookup("nope"), None);
+        fs::remove_dir_all(&dir).ok();
+    }
 }
 
 fn main() {
@@ -1054,6 +1555,7 @@ fn main() {
     // Determine if we have service names and parse other options
     let mut force_stop_start = false;
     let mut follow = false;
+    let mut project_name: Option<String> = None;
     let mut service_names: Vec<String> = Vec::new();
     let start_index = match command {
         TickleCommand::Start | TickleCommand::Stop => 2, // Skip "tickle" and "start"/"stop"
@@ -1076,6 +1578,16 @@ fn main() {
                     exit(1);
                 }
             }
+            "-p" | "--project" => {
+                i += 1;
+                match args.get(i) {
+                    Some(name) if !name.starts_with('-') => project_name = Some(name.clone()),
+                    _ => {
+                        eprintln!("❌ Error: --project requires a compose project name");
+                        exit(1);
+                    }
+                }
+            }
             arg if !arg.starts_with('-') => {
                 service_names.push(arg.to_string());
             }
@@ -1088,9 +1600,34 @@ fn main() {
         i += 1;
     }
 
-    // Handle compose file operations when no service names are provided
-    if service_names.is_empty() {
-        if let Some(compose_file) = find_compose_file() {
+    if project_name.is_some() && !service_names.is_empty() {
+        eprintln!("❌ Error: --project cannot be combined with service names");
+        exit(1);
+    }
+
+    // Pick the compose stack to act on: an explicit --project, else a compose file in the CWD.
+    let compose_selection: Option<(Vec<String>, String, String)> = if let Some(name) = &project_name
+    {
+        let cache = match ProjectCache::new() {
+            Ok(cache) => cache,
+            Err(e) => {
+                eprintln!("❌ Error: {}", e);
+                exit(1);
+            }
+        };
+        match resolve_compose_project(name, &cache) {
+            Ok(project) => Some((
+                project.compose_args(),
+                name.clone(),
+                format!("compose:{}", name),
+            )),
+            Err(e) => {
+                eprintln!("❌ Error: {}", e);
+                exit(1);
+            }
+        }
+    } else if service_names.is_empty() {
+        find_compose_file().map(|compose_file| {
             // Get current directory name for better history context
             let dir_name = env::current_dir()
                 .ok()
@@ -1100,46 +1637,56 @@ fn main() {
                 })
                 .unwrap_or_else(|| "unknown".to_string());
 
-            let target = format!("compose:{}:{}", dir_name, compose_file);
+            (
+                vec!["-f".to_string(), compose_file.to_string()],
+                compose_file.to_string(),
+                format!("compose:{}:{}", dir_name, compose_file),
+            )
+        })
+    } else {
+        None
+    };
 
-            let result = match command {
-                TickleCommand::Tickle => compose_down_up(compose_file),
-                TickleCommand::Start => compose_start(compose_file),
-                TickleCommand::Stop => compose_stop(compose_file),
-                TickleCommand::History | TickleCommand::Completions => unreachable!(),
-            };
+    if let Some((selector, label, target)) = compose_selection {
+        let result = match command {
+            TickleCommand::Tickle => compose_down_up(&selector, &label),
+            TickleCommand::Start => compose_start(&selector, &label),
+            TickleCommand::Stop => compose_stop(&selector, &label),
+            TickleCommand::History | TickleCommand::Completions => unreachable!(),
+        };
 
-            let success = result.is_ok();
-            let cmd_name = match command {
-                TickleCommand::Tickle => "tickle",
-                TickleCommand::Start => "start",
-                TickleCommand::Stop => "stop",
-                TickleCommand::History | TickleCommand::Completions => unreachable!(),
-            };
+        let success = result.is_ok();
+        let cmd_name = match command {
+            TickleCommand::Tickle => "tickle",
+            TickleCommand::Start => "start",
+            TickleCommand::Stop => "stop",
+            TickleCommand::History | TickleCommand::Completions => unreachable!(),
+        };
 
-            // Log to history
-            if let Err(e) = history_manager.log_command(cmd_name, &target, success) {
-                eprintln!("⚠️  Warning: Failed to log to history: {}", e);
-            }
-
-            match result {
-                Ok(()) => {
-                    println!("🎉 Compose {} completed successfully!", cmd_name);
-                    if follow {
-                        follow_compose_logs(compose_file);
-                    }
-                    exit(0);
-                }
-                Err(e) => {
-                    eprintln!("❌ Compose error: {}", e);
-                    exit(1);
-                }
-            }
-        } else {
-            eprintln!("❌ Error: No service name provided and no compose file found");
-            print_usage();
-            exit(1);
+        // Log to history
+        if let Err(e) = history_manager.log_command(cmd_name, &target, success) {
+            eprintln!("⚠️  Warning: Failed to log to history: {}", e);
         }
+
+        match result {
+            Ok(()) => {
+                println!("🎉 Compose {} completed successfully!", cmd_name);
+                if follow {
+                    follow_compose_logs(&selector);
+                }
+                exit(0);
+            }
+            Err(e) => {
+                eprintln!("❌ Compose error: {}", e);
+                exit(1);
+            }
+        }
+    }
+
+    if service_names.is_empty() {
+        eprintln!("❌ Error: No service name provided and no compose file found");
+        print_usage();
+        exit(1);
     }
 
     // Check if running as root/with sudo for systemd operations
