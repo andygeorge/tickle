@@ -7,7 +7,7 @@ More docs in [docs/](./docs/).
 ## Install
 
 ```bash
-cargo install --git https://github.com/andygeorge/tickle#0.7.0 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
+cargo install --git https://github.com/andygeorge/tickle#0.9.0 && sudo cp ~/.cargo/bin/tickle /usr/bin/tickle
 ```
 
 Or from source:
